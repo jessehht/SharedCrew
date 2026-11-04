@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -32,6 +32,7 @@ public:
     bool sendTo(const Endpoint& to, const void* data, size_t len);
     // Returns bytes received, 0 when nothing is waiting.
     int recvFrom(Endpoint& from, void* buf, size_t cap);
+    uint16_t localPort() const;
 
 private:
     intptr_t sock_ = -1;

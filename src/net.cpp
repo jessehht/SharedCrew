@@ -1,4 +1,4 @@
-#include "net.h"
+﻿#include "net.h"
 
 #include <cstdio>
 
@@ -126,6 +126,18 @@ int UdpSocket::recvFrom(Endpoint& from, void* buf, size_t cap) {
 #endif
         return 0;  // would block, or a real error: nothing to read now
     }
+}
+
+uint16_t UdpSocket::localPort() const {
+    if (!isOpen()) return 0;
+    sockaddr_in addr{};
+#ifdef _WIN32
+    int len = sizeof(addr);
+#else
+    socklen_t len = sizeof(addr);
+#endif
+    if (getsockname(static_cast<socket_t>(sock_), reinterpret_cast<sockaddr*>(&addr), &len) != 0) return 0;
+    return ntohs(addr.sin_port);
 }
 
 bool resolveHost(const std::string& host, uint16_t port, Endpoint& out, std::string& err) {

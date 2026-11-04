@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Wire format for SharedCrew packets. Little-endian, UDP.
 #include <cstdint>
 #include <cstring>
@@ -23,6 +23,7 @@ enum class Msg : uint8_t {
     Reliable = 8,  // ordered, acknowledged message (commands, control handover)
     Ack = 9,
     Bye = 10,
+    Punch = 11,    // host -> guest: opens a path through the host's router
 };
 
 enum class RelKind : uint8_t {

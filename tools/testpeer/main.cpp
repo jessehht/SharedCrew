@@ -16,6 +16,8 @@
 #include <thread>
 #include <vector>
 
+#include "../../src/code.h"
+#include "../../src/nat.h"
 #include "../../src/net.h"
 #include "../../src/protocol.h"
 
@@ -146,6 +148,52 @@ int main(int argc, char** argv) {
         printf("Press a key to close.\n");
         _getch();
         return 1;
+    }
+
+    // --nat-check: test the router/internet part on its own, then quit.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) != "--nat-check") continue;
+        printf("Router check on port %u\n", port);
+        NatHelper nat;
+        nat.start(port, true);
+        Endpoint pub;
+        bool stunOk = false;
+        int tries = 0;
+        double lastSend = -1;
+        const double start = now();
+        while (now() - start < 12.0) {
+            NatResult r = nat.result();
+            if (!stunOk && r.stunResolved && !r.stunServers.empty() && now() - lastSend > 0.5 && tries < 12) {
+                auto req = makeStunRequest();
+                sock.sendTo(r.stunServers[tries % r.stunServers.size()], req.data(), req.size());
+                lastSend = now();
+                ++tries;
+            }
+            uint8_t buf[1500];
+            Endpoint from;
+            int n;
+            while ((n = sock.recvFrom(from, buf, sizeof(buf))) > 0)
+                if (!stunOk && parseStunResponse(buf, n, pub)) stunOk = true;
+            for (auto& l : nat.takeLogs()) printf("  %s\n", l.c_str());
+            if (stunOk && r.upnpDone) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        NatResult r = nat.result();
+        printf("  home network address : %s\n", ipToString(r.lanIp).c_str());
+        printf("  internet address     : %s\n", stunOk ? pub.str().c_str() : "not found (STUN failed)");
+        printf("  UPnP                 : %s\n", r.upnpDone ? r.upnpNote.c_str() : "no answer");
+        if (r.upnpOk) printf("  router says internet : %s\n", ipToString(r.upnpExternalIp).c_str());
+        Endpoint codePub = r.upnpOk ? Endpoint{r.upnpExternalIp, port} : pub;
+        std::string code = encodeCode(codePub, Endpoint{r.lanIp, port});
+        Endpoint a, b;
+        bool round = decodeCode(code, a, b) && a == codePub && b == Endpoint{r.lanIp, port};
+        printf("  session code         : %s (%s)\n", code.c_str(), round ? "reads back OK" : "READ-BACK FAILED");
+        nat.stop();
+        nat.wait();
+        for (auto& l : nat.takeLogs()) printf("  %s\n", l.c_str());
+        sock.close();
+        netShutdown();
+        return 0;
     }
 
     Endpoint peer;

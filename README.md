@@ -19,10 +19,17 @@ Status: early development (0.1). Builds on Windows. Not yet tested in X-Plane.
 
 1. Both pilots load the same aircraft at the same airport.
 2. Open *Plugins > SharedCrew > Show / hide window*.
-3. Host: click **Host a session**. The host needs UDP port 51000 forwarded in the router,
-   or both pilots use the same VPN (ZeroTier, Radmin VPN).
-4. Other pilot: enter the host's address and click **Join host**.
-5. **Take controls** hands the aircraft over.
+3. Host: click **Host a session**, then **Copy** the session code and send it to the other pilot
+   (Discord, WhatsApp...).
+4. Other pilot: **Paste** the code and click **Join**.
+5. If the other pilot can't get through after a few seconds, their window shows a **reply code**.
+   They send it to the host, who pastes it and clicks **Let guest in**.
+6. **Take controls** hands the aircraft over.
+
+No VPN or router settings needed. SharedCrew asks the router to open the port (UPnP) when the
+router allows it, and otherwise finds a way through both routers using the codes (UDP hole punching,
+with free public STUN servers). This does not work on every connection: some mobile/4G and
+"carrier-grade NAT" connections block it. Entering an IP address instead of a code still works too.
 
 ## Building (Windows)
 
@@ -56,6 +63,8 @@ Use DataRefTool to find an aircraft's datarefs and commands.
 `SharedCrew-TestPeer.exe` (built to `build/dist/TestPeer`) pretends to be the second pilot.
 Start it, join `127.0.0.1` in X-Plane, then use its keys: T take controls (it flies turns),
 G give back, L/B toggle lights, A press autopilot HDG.
+
+`SharedCrew-TestPeer.exe --nat-check` checks your router: home and internet address, UPnP, and a sample session code.
 
 ## License
 

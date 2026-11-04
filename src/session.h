@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nat.h"
 #include "net.h"
 #include "profile.h"
 #include "protocol.h"
@@ -22,8 +23,17 @@ public:
     void setAircraft(const std::string& acfFile) { acfFile_ = acfFile; }
 
     bool startHost(uint16_t port);
-    bool join(const std::string& host, uint16_t port);
+    // codeOrHost: a session code, or an IP address / host name.
+    bool join(const std::string& codeOrHost, uint16_t port);
+    // Host: open a path to a guest that can't get through (their reply code).
+    bool letIn(const std::string& replyCode);
     void stop(const std::string& reason, bool notifyPeer = true);
+
+    // The code to send to the other pilot. Empty while still being worked out.
+    std::string myCode() const;
+    // Guest: true once it is time to show the reply code.
+    bool needsReplyCode() const;
+    bool waitingForGuest() const { return role_ == Role::Host && phase_ == Phase::Waiting; }
 
     // Call every frame, before the flight model runs.
     void update();
@@ -78,6 +88,8 @@ private:
     void applyRemoteState(double now);
     void setOverrides(bool on);
     void setHostIsMaster(bool v);
+    void updateNat(double now);
+    bool isCandidate(const Endpoint& e) const;
 
     Profile& profile_;
     std::string acfFile_;
@@ -108,6 +120,18 @@ private:
     std::deque<Snap> snaps_;
     double clockOffset_ = 0;
     bool haveOffset_ = false;
+
+    // Getting through routers
+    NatHelper nat_;
+    uint16_t localPort_ = 0;
+    std::vector<Endpoint> candidates_;  // guest: addresses to try for the host
+    Endpoint stunPublic_;
+    bool stunOk_ = false;
+    int stunTries_ = 0;
+    double lastStun_ = 0;
+    std::vector<Endpoint> punchTargets_;
+    double punchUntil_ = 0;
+    double lastPunch_ = 0;
 };
 
 }  // namespace sc

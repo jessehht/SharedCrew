@@ -97,6 +97,14 @@ UiStatus buildStatus() {
     int missing = g_profile.unresolvedCount();
     if (missing > 0) s.profile += " (" + std::to_string(missing) + " items not found)";
 
+    s.code = g_session.myCode();
+    s.canLetIn = g_session.waitingForGuest();
+    if (g_session.role() == Role::Host) s.codeLabel = "Session code";
+    if (g_session.role() == Role::Guest) {
+        s.codeLabel = "Reply code";
+        if (!g_session.needsReplyCode()) s.code.clear();  // only needed if the host can't be reached
+    }
+
     if (s.connected) {
         char buf[96];
         snprintf(buf, sizeof(buf), "%s, ping %.0f ms", g_session.peerText().c_str(), g_session.pingMs());
@@ -181,6 +189,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
     UiActions actions;
     actions.host = onHost;
     actions.join = onJoin;
+    actions.letIn = [](const std::string& code) { g_session.letIn(code); };
     actions.disconnect = [] { g_session.stop("Disconnected"); };
     actions.takeControls = [] { g_session.takeControls(); };
     uiInit(actions, g_settings.host, g_settings.port);

@@ -8,6 +8,7 @@
 #include "XPLMGraphics.h"
 #include "XPLMPlanes.h"
 #include "XPLMUtilities.h"
+#include "code.h"
 #include "log.h"
 
 namespace sc {
@@ -15,7 +16,11 @@ namespace sc {
 namespace {
 
 constexpr double kHelloInterval = 1.0;
-constexpr double kConnectTimeout = 15.0;
+constexpr double kConnectTimeout = 120.0;  // time to swap codes if needed
+constexpr double kReplyCodeAfter = 6.0;    // guest: show the reply code after this long
+constexpr int kMaxStunTries = 12;
+constexpr double kStunKeepAlive = 20.0;  // keeps the path through the router open while waiting
+constexpr double kPunchTime = 60.0;
 constexpr double kLinkTimeout = 8.0;
 constexpr double kPingInterval = 1.0;
 constexpr double kStateInterval = 1.0 / 30.0;  // 30 position updates per second
@@ -109,34 +114,130 @@ bool Session::startHost(uint16_t port) {
     phase_ = Phase::Waiting;
     hostIsMaster_ = true;
     startTime_ = now();
-    status_ = "Waiting for the other pilot on port " + std::to_string(port);
+    localPort_ = port;
+    nat_.start(port, true);
+    status_ = "Making your session code...";
     log("hosting on port " + std::to_string(port) + ", profile: " + profile_.title);
     return true;
 }
 
-bool Session::join(const std::string& host, uint16_t port) {
+bool Session::join(const std::string& codeOrHost, uint16_t port) {
     stop("", false);
     std::string err;
-    Endpoint ep;
-    if (!resolveHost(host, port, ep, err)) {
-        status_ = err;
-        return false;
+    Endpoint pub, lan;
+    if (decodeCode(codeOrHost, pub, lan)) {
+        // Try the internet address and the home-network address (works when both PCs are at home).
+        if (pub.valid()) candidates_.push_back(pub);
+        if (lan.valid() && lan != pub) candidates_.push_back(lan);
+    } else {
+        Endpoint ep;
+        if (!resolveHost(codeOrHost, port, ep, err)) {
+            status_ = "That is not a valid session code or address";
+            return false;
+        }
+        candidates_.push_back(ep);
     }
     if (!sock_.open(0, err)) {
         status_ = err;
         log(err);
+        candidates_.clear();
         return false;
     }
     g_pos.init();
     role_ = Role::Guest;
     phase_ = Phase::Connecting;
-    peer_ = ep;
     hostIsMaster_ = true;
     startTime_ = now();
     lastHello_ = 0;
-    status_ = "Connecting to " + ep.str() + "...";
-    log("joining " + ep.str());
+    localPort_ = sock_.localPort();
+    nat_.start(localPort_, false);
+    status_ = "Connecting...";
+    std::string list;
+    for (auto& c : candidates_) list += " " + c.str();
+    log("joining, trying" + list);
     return true;
+}
+
+bool Session::letIn(const std::string& replyCode) {
+    if (!waitingForGuest()) return false;
+    Endpoint pub, lan;
+    if (!decodeCode(replyCode, pub, lan)) {
+        status_ = "That is not a valid reply code";
+        return false;
+    }
+    punchTargets_.clear();
+    if (pub.valid()) punchTargets_.push_back(pub);
+    if (lan.valid() && lan != pub) punchTargets_.push_back(lan);
+    punchUntil_ = now() + kPunchTime;
+    lastPunch_ = 0;
+    status_ = "Opening the way for the other pilot...";
+    log("letting in guest at " + pub.str());
+    return true;
+}
+
+std::string Session::myCode() const {
+    if (phase_ == Phase::Idle || phase_ == Phase::Connected) return {};
+    NatResult nr = nat_.result();
+    Endpoint lan{nr.lanIp, localPort_};
+    if (role_ == Role::Guest) return stunOk_ ? encodeCode(stunPublic_, lan) : std::string();
+
+    // Host: wait for the router (UPnP) and the public address (STUN).
+    const double waited = now() - startTime_;
+    const bool stunFinished = stunOk_ || stunTries_ >= kMaxStunTries;
+    if (!(nr.upnpDone || waited > 8.0) || !(stunFinished || nr.upnpOk)) return {};
+
+    Endpoint pub;
+    if (nr.upnpOk && (!stunOk_ || stunPublic_.ip == nr.upnpExternalIp))
+        pub = Endpoint{nr.upnpExternalIp, nr.upnpPort};
+    else if (stunOk_)
+        pub = stunPublic_;
+    if (!pub.valid() && !lan.valid()) return {};
+    return encodeCode(pub, lan);
+}
+
+bool Session::needsReplyCode() const {
+    return role_ == Role::Guest && phase_ == Phase::Connecting && stunOk_ && now() - startTime_ > kReplyCodeAfter;
+}
+
+bool Session::isCandidate(const Endpoint& e) const {
+    for (const auto& c : candidates_)
+        if (c == e) return true;
+    return false;
+}
+
+void Session::updateNat(double t) {
+    for (const auto& line : nat_.takeLogs()) log(line);
+    NatResult nr = nat_.result();
+
+    // Ask a public STUN server what our internet address is (and keep the router path open).
+    if (nr.stunResolved && !nr.stunServers.empty()) {
+        bool ask = (!stunOk_ && stunTries_ < kMaxStunTries && t - lastStun_ >= 0.5) ||
+                   (stunOk_ && phase_ != Phase::Connected && t - lastStun_ >= kStunKeepAlive);
+        if (ask) {
+            auto req = makeStunRequest();
+            const Endpoint& server = nr.stunServers[stunTries_ % nr.stunServers.size()];
+            sock_.sendTo(server, req.data(), req.size());
+            lastStun_ = t;
+            ++stunTries_;
+            if (!stunOk_ && stunTries_ == kMaxStunTries) log("could not reach a STUN server");
+        }
+    }
+
+    if (role_ == Role::Host && phase_ == Phase::Waiting) {
+        // Send a few packets towards the guest so our router lets their packets in.
+        if (!punchTargets_.empty() && t < punchUntil_ && t - lastPunch_ >= 0.3) {
+            lastPunch_ = t;
+            Writer w;
+            w.header(Msg::Punch);
+            for (const auto& p : punchTargets_) sock_.sendTo(p, w.buf.data(), w.buf.size());
+        }
+        if (punchTargets_.empty() && !myCode().empty()) {
+            status_ = nr.upnpOk ? "Waiting for the other pilot (router opened automatically)"
+                                : "Waiting for the other pilot";
+        }
+    }
+
+    if (needsReplyCode()) status_ = "Can't reach the host yet. Send your reply code to the host.";
 }
 
 void Session::stop(const std::string& reason, bool notifyPeer) {
@@ -147,6 +248,14 @@ void Session::stop(const std::string& reason, bool notifyPeer) {
     }
     setOverrides(false);
     sock_.close();
+    nat_.stop();
+    candidates_.clear();
+    stunOk_ = false;
+    stunPublic_ = Endpoint{};
+    stunTries_ = 0;
+    lastStun_ = 0;
+    punchTargets_.clear();
+    punchUntil_ = 0;
     if (!reason.empty()) log("session ended: " + reason);
     role_ = Role::None;
     phase_ = Phase::Idle;
@@ -193,10 +302,11 @@ void Session::update() {
     const double t = now();
     receiveAll(t);
     if (phase_ == Phase::Idle) return;  // a Bye or Reject may have stopped us
+    if (phase_ != Phase::Connected) updateNat(t);
 
     if (phase_ == Phase::Connecting) {
         if (t - lastHello_ >= kHelloInterval) sendHello();
-        if (t - startTime_ > kConnectTimeout) stop("No answer from the host. Check the address, port and firewall.", false);
+        if (t - startTime_ > kConnectTimeout) stop("No answer from the host. Check the session code.", false);
         return;
     }
     if (phase_ != Phase::Connected) return;
@@ -245,6 +355,15 @@ void Session::receiveAll(double t) {
     for (int i = 0; i < 500; ++i) {
         int n = sock_.recvFrom(from, buf, sizeof(buf));
         if (n <= 0) break;
+        if (isStunPacket(buf, static_cast<size_t>(n))) {
+            Endpoint pub;
+            if (!stunOk_ && parseStunResponse(buf, static_cast<size_t>(n), pub)) {
+                stunPublic_ = pub;
+                stunOk_ = true;
+                log("internet address: " + pub.str());
+            }
+            continue;
+        }
         handlePacket(from, buf, static_cast<size_t>(n), t);
         if (phase_ == Phase::Idle) break;
     }
@@ -299,6 +418,11 @@ void Session::handlePacket(const Endpoint& from, const uint8_t* data, size_t len
         beginSync();
         return;
     }
+
+    // Guest: the host answers on whichever address got through.
+    if (role_ == Role::Guest && phase_ == Phase::Connecting && (type == Msg::Welcome || type == Msg::Reject) &&
+        isCandidate(from))
+        peer_ = from;
 
     if (from != peer_ || version != kProtocolVersion) return;
     lastRecv_ = t;
@@ -391,7 +515,7 @@ void Session::sendHello() {
     w.str(acfFile_);
     w.put<uint32_t>(profile_.hash);
     w.str(SHAREDCREW_VERSION);
-    send(w);
+    for (const auto& c : candidates_) sock_.sendTo(c, w.buf.data(), w.buf.size());
 }
 
 void Session::sendWelcome() {
