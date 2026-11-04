@@ -1,0 +1,86 @@
+# SharedCrew - default profile
+# Used for every aircraft, unless an aircraft profile says "nodefault".
+#
+#   sync <dataref>      two-way: whoever changes it last wins (switches, knobs, radios)
+#   stream <dataref>    one-way from the pilot flying, every frame (yoke, throttle, fuel)
+#   command <command>   a button press is repeated on the other PC
+#
+# Add [n] after a dataref to sync only one element of an array, e.g. ...battery_on[0]
+
+title Generic aircraft
+
+# Lights
+sync sim/cockpit2/switches/landing_lights_on
+sync sim/cockpit2/switches/taxi_light_on
+sync sim/cockpit2/switches/navigation_lights_on
+sync sim/cockpit2/switches/beacon_on
+sync sim/cockpit2/switches/strobe_lights_on
+sync sim/cockpit2/switches/panel_brightness_ratio
+sync sim/cockpit2/switches/instrument_brightness_ratio
+
+# Electrical
+sync sim/cockpit2/electrical/battery_on
+sync sim/cockpit2/electrical/generator_on
+sync sim/cockpit2/switches/avionics_power_on
+
+# Engines and fuel
+sync sim/cockpit2/engine/actuators/ignition_key
+sync sim/cockpit2/engine/actuators/mixture_ratio
+sync sim/cockpit2/engine/actuators/prop_ratio
+sync sim/cockpit2/engine/actuators/carb_heat_ratio
+sync sim/cockpit2/engine/actuators/fuel_pump_on
+sync sim/cockpit2/fuel/fuel_tank_selector
+sync sim/cockpit2/ice/ice_pitot_heat_on_pilot
+
+# Gear, flaps, brakes
+sync sim/cockpit2/controls/gear_handle_down
+sync sim/cockpit2/controls/flap_ratio
+sync sim/cockpit2/controls/parking_brake_ratio
+sync sim/cockpit2/controls/speedbrake_ratio
+
+# Radios
+sync sim/cockpit2/radios/actuators/com1_frequency_hz_833
+sync sim/cockpit2/radios/actuators/com1_standby_frequency_hz_833
+sync sim/cockpit2/radios/actuators/com2_frequency_hz_833
+sync sim/cockpit2/radios/actuators/com2_standby_frequency_hz_833
+sync sim/cockpit2/radios/actuators/nav1_frequency_hz
+sync sim/cockpit2/radios/actuators/nav1_standby_frequency_hz
+sync sim/cockpit2/radios/actuators/nav2_frequency_hz
+sync sim/cockpit2/radios/actuators/nav2_standby_frequency_hz
+sync sim/cockpit2/radios/actuators/adf1_frequency_hz
+sync sim/cockpit2/radios/actuators/nav1_obs_deg_mag_pilot
+sync sim/cockpit2/radios/actuators/nav2_obs_deg_mag_pilot
+sync sim/cockpit2/radios/actuators/transponder_code
+sync sim/cockpit2/radios/actuators/transponder_mode
+
+# Instruments
+sync sim/cockpit2/gauges/actuators/barometer_setting_in_hg_pilot
+sync sim/cockpit2/gauges/actuators/barometer_setting_in_hg_copilot
+
+# Autopilot settings
+sync sim/cockpit2/autopilot/heading_dial_deg_mag_pilot
+sync sim/cockpit2/autopilot/altitude_dial_ft
+sync sim/cockpit2/autopilot/vvi_dial_fpm
+sync sim/cockpit2/autopilot/airspeed_dial_kts_mach
+
+# Autopilot buttons
+command sim/autopilot/servos_toggle
+command sim/autopilot/heading
+command sim/autopilot/NAV
+command sim/autopilot/approach
+command sim/autopilot/altitude_hold
+command sim/autopilot/vertical_speed
+command sim/autopilot/level_change
+command sim/autopilot/back_course
+
+# From the pilot flying
+stream sim/joystick/yoke_pitch_ratio
+stream sim/joystick/yoke_roll_ratio
+stream sim/joystick/yoke_heading_ratio
+stream sim/cockpit2/engine/actuators/throttle_ratio
+stream sim/cockpit2/controls/left_brake_ratio
+stream sim/cockpit2/controls/right_brake_ratio
+stream sim/cockpit2/controls/elevator_trim
+stream sim/cockpit2/controls/aileron_trim
+stream sim/cockpit2/controls/rudder_trim
+stream sim/flightmodel/weight/m_fuel

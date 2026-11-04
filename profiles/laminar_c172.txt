@@ -1,0 +1,5 @@
+# SharedCrew - Laminar Research Cessna 172 SP (X-Plane 12 default)
+# The C172 uses standard X-Plane datarefs, so default.txt covers most of it.
+
+title Cessna 172 SP (Laminar)
+match Cessna_172SP
