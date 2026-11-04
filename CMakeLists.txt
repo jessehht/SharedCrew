@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.20)
-project(SharedCrew VERSION 0.1.0 LANGUAGES CXX)
+project(SharedCrew VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,6 +85,12 @@ if(WIN32)
         string(TOUPPER ${cfg} CFG)
         set_target_properties(sc-testpeer PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFG} "${CMAKE_BINARY_DIR}/dist/TestPeer")
     endforeach()
+    add_custom_command(TARGET sc-testpeer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_SOURCE_DIR}/tools/testpeer/Test via server.bat"
+            "${CMAKE_SOURCE_DIR}/tools/testpeer/Test via relay.bat"
+            "${CMAKE_BINARY_DIR}/dist/TestPeer/"
+    )
 endif()
 
 add_custom_command(TARGET SharedCrew POST_BUILD

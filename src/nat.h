@@ -25,6 +25,9 @@ struct NatResult {
 
     bool stunResolved = false;
     std::vector<Endpoint> stunServers;
+
+    bool serverResolved = false;  // finished looking up the SharedCrew server
+    Endpoint server;              // invalid if not configured or not found
 };
 
 class NatHelper {
@@ -32,7 +35,8 @@ public:
     ~NatHelper();
 
     // Runs in a background thread so X-Plane never stutters.
-    void start(uint16_t localPort, bool openRouterPort);
+    // serverAddress: SharedCrew server "host:port", empty = don't use one.
+    void start(uint16_t localPort, bool openRouterPort, const std::string& serverAddress = "");
     // Closes the router port again (in the background).
     void stop();
     NatResult result() const;
@@ -46,6 +50,7 @@ private:
 
     void addLog(const std::string& s);
     std::vector<std::string> logs_;
+    std::string serverAddress_;
     std::thread thread_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;

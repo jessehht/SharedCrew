@@ -21,6 +21,8 @@ public:
     explicit Session(Profile& profile) : profile_(profile) {}
 
     void setAircraft(const std::string& acfFile) { acfFile_ = acfFile; }
+    // SharedCrew server "host:port" for short codes and relay. Empty = off.
+    void setServer(const std::string& address) { serverAddress_ = address; }
 
     bool startHost(uint16_t port);
     // codeOrHost: a session code, or an IP address / host name.
@@ -89,7 +91,12 @@ private:
     void setOverrides(bool on);
     void setHostIsMaster(bool v);
     void updateNat(double now);
+    void updateServer(double now);
     bool isCandidate(const Endpoint& e) const;
+    // All game packets go through here: packets to the server are wrapped for the relay.
+    void sendGame(const Endpoint& to, const std::vector<uint8_t>& data);
+    void sendServer(Srv type, const Writer& body);
+    void handleServer(const uint8_t* data, size_t len, double now);
 
     Profile& profile_;
     std::string acfFile_;
@@ -132,6 +139,21 @@ private:
     std::vector<Endpoint> punchTargets_;
     double punchUntil_ = 0;
     double lastPunch_ = 0;
+
+    // SharedCrew server
+    std::string serverAddress_;
+    Endpoint server_;
+    uint64_t token_ = 0;         // identifies us to the server and to the host
+    uint64_t peerToken_ = 0;     // host: token of the guest that got in
+    std::string shortCode_;      // host: code from the server
+    double lastRegister_ = 0;
+    bool viaServer_ = false;     // guest: joined with a short code
+    std::string joinCode_;
+    int joinTries_ = 0;
+    double lastJoin_ = 0;
+    bool joinOk_ = false;
+    double joinOkAt_ = 0;
+    bool relayAdded_ = false;
 };
 
 }  // namespace sc

@@ -4,7 +4,7 @@ Free shared cockpit for X-Plane 12. Two pilots on two PCs fly one aircraft toget
 one is the host, the other joins. Switches, knobs, radios and autopilot buttons stay in sync
 both ways, and the controls can be handed over in flight.
 
-Status: early development (0.1). Builds on Windows. Not yet tested in X-Plane.
+Status: early development (0.2). Tested on one PC with the test peer; not yet tested between two homes.
 
 ## How it works
 
@@ -19,17 +19,33 @@ Status: early development (0.1). Builds on Windows. Not yet tested in X-Plane.
 
 1. Both pilots load the same aircraft at the same airport.
 2. Open *Plugins > SharedCrew > Show / hide window*.
-3. Host: click **Host a session**, then **Copy** the session code and send it to the other pilot
-   (Discord, WhatsApp...).
+3. Host: click **Host a session**, then **Copy** the session code (like `K7P-4QX`) and send it to the
+   other pilot (Discord, WhatsApp...).
 4. Other pilot: **Paste** the code and click **Join**.
-5. If the other pilot can't get through after a few seconds, their window shows a **reply code**.
-   They send it to the host, who pastes it and clicks **Let guest in**.
-6. **Take controls** hands the aircraft over.
+5. **Take controls** hands the aircraft over.
 
-No VPN or router settings needed. SharedCrew asks the router to open the port (UPnP) when the
-router allows it, and otherwise finds a way through both routers using the codes (UDP hole punching,
-with free public STUN servers). This does not work on every connection: some mobile/4G and
-"carrier-grade NAT" connections block it. Entering an IP address instead of a code still works too.
+No VPN or router settings needed. The SharedCrew server hands out the short codes and tells both
+PCs where the other one is, so they can connect directly. If a direct connection is not possible
+(for example with Starlink or some fibre providers), the traffic goes through the server instead.
+
+If the server can't be reached, SharedCrew falls back to a long code without a server: the router
+port is opened with UPnP when the router allows it, and otherwise the guest gets a **reply code**
+for the host to paste (**Let guest in**). Entering an IP address still works too.
+
+## Server
+
+The matchmaking and relay server is in `server/` (Python 3, standard library only, one UDP port).
+The plugin uses `sharedcrew.mijngms.com:51010`. To use another server, add `server=host:port`
+to `SharedCrew/settings.txt`, or `server=off` to never use one.
+
+```
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sharedcrew
+sudo install -D -m 644 server/sharedcrew_server.py /opt/sharedcrew/sharedcrew_server.py
+sudo install -m 644 server/sharedcrew.service /etc/systemd/system/
+sudo systemctl enable --now sharedcrew
+sudo ufw allow 51010/udp
+python3 server/test_server.py 127.0.0.1 51010
+```
 
 ## Building (Windows)
 
@@ -65,6 +81,7 @@ Start it, join `127.0.0.1` in X-Plane, then use its keys: T take controls (it fl
 G give back, L/B toggle lights, A press autopilot HDG.
 
 `SharedCrew-TestPeer.exe --nat-check` checks your router: home and internet address, UPnP, and a sample session code.
+`Test via server.bat` gets a short code from the server; `Test via relay.bat` only answers through the relay.
 
 ## License
 

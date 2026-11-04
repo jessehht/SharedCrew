@@ -1,0 +1,29 @@
+[Unit]
+Description=SharedCrew matchmaking and relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sharedcrew
+Group=sharedcrew
+ExecStart=/usr/bin/python3 /opt/sharedcrew/sharedcrew_server.py --port 51010
+Restart=always
+RestartSec=3
+
+# Keep it small and separated from everything else on the server
+MemoryMax=128M
+CPUQuota=25%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

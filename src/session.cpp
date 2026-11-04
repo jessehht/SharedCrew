@@ -1,8 +1,11 @@
-#include "session.h"
+﻿#include "session.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstring>
+#include <random>
 
 #include "XPLMDataAccess.h"
 #include "XPLMGraphics.h"
@@ -87,6 +90,26 @@ float lerpAngle(float a, float b, double f) {
     return r;
 }
 
+uint64_t newToken() {
+    std::random_device rd;
+    return (static_cast<uint64_t>(rd()) << 32) ^ rd() ^ static_cast<uint64_t>(now() * 1e6);
+}
+
+// "k7p-4qx" -> "K7P4QX". Empty if it is not a 6-character server code.
+std::string normalizeShortCode(const std::string& text) {
+    static const char kAlpha[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    std::string out;
+    for (char c : text) {
+        if (c == '-' || c == ' ') continue;
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (c == 'O') c = '0';
+        if (c == 'I' || c == 'L') c = '1';
+        if (!std::strchr(kAlpha, c) || c == 0) return {};
+        out += c;
+    }
+    return out.size() == 6 ? out : std::string();
+}
+
 bool differs(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size()) return true;
     for (size_t i = 0; i < a.size(); ++i) {
@@ -115,7 +138,8 @@ bool Session::startHost(uint16_t port) {
     hostIsMaster_ = true;
     startTime_ = now();
     localPort_ = port;
-    nat_.start(port, true);
+    token_ = newToken();
+    nat_.start(port, true, serverAddress_);
     status_ = "Making your session code...";
     log("hosting on port " + std::to_string(port) + ", profile: " + profile_.title);
     return true;
@@ -125,7 +149,15 @@ bool Session::join(const std::string& codeOrHost, uint16_t port) {
     stop("", false);
     std::string err;
     Endpoint pub, lan;
-    if (decodeCode(codeOrHost, pub, lan)) {
+    std::string shortCode = normalizeShortCode(codeOrHost);
+    if (!shortCode.empty()) {
+        if (serverAddress_.empty()) {
+            status_ = "Short codes need the SharedCrew server, which is turned off";
+            return false;
+        }
+        viaServer_ = true;  // the server will tell us where the host is
+        joinCode_ = shortCode;
+    } else if (decodeCode(codeOrHost, pub, lan)) {
         // Try the internet address and the home-network address (works when both PCs are at home).
         if (pub.valid()) candidates_.push_back(pub);
         if (lan.valid() && lan != pub) candidates_.push_back(lan);
@@ -141,6 +173,7 @@ bool Session::join(const std::string& codeOrHost, uint16_t port) {
         status_ = err;
         log(err);
         candidates_.clear();
+        viaServer_ = false;
         return false;
     }
     g_pos.init();
@@ -150,11 +183,17 @@ bool Session::join(const std::string& codeOrHost, uint16_t port) {
     startTime_ = now();
     lastHello_ = 0;
     localPort_ = sock_.localPort();
-    nat_.start(localPort_, false);
-    status_ = "Connecting...";
-    std::string list;
-    for (auto& c : candidates_) list += " " + c.str();
-    log("joining, trying" + list);
+    token_ = newToken();
+    nat_.start(localPort_, false, viaServer_ ? serverAddress_ : std::string());
+    if (viaServer_) {
+        status_ = "Looking up session " + joinCode_.substr(0, 3) + "-" + joinCode_.substr(3) + "...";
+        log("joining session " + joinCode_ + " via the SharedCrew server");
+    } else {
+        status_ = "Connecting...";
+        std::string list;
+        for (auto& c : candidates_) list += " " + c.str();
+        log("joining, trying" + list);
+    }
     return true;
 }
 
@@ -181,8 +220,12 @@ std::string Session::myCode() const {
     Endpoint lan{nr.lanIp, localPort_};
     if (role_ == Role::Guest) return stunOk_ ? encodeCode(stunPublic_, lan) : std::string();
 
-    // Host: wait for the router (UPnP) and the public address (STUN).
+    // Host: the short code from the server is the easiest. Give the server a few seconds.
+    if (!shortCode_.empty()) return shortCode_.substr(0, 3) + "-" + shortCode_.substr(3);
     const double waited = now() - startTime_;
+    if (!serverAddress_.empty() && waited < 5.0 && !(nr.serverResolved && !nr.server.valid())) return {};
+
+    // No server: long code. Wait for the router (UPnP) and the public address (STUN).
     const bool stunFinished = stunOk_ || stunTries_ >= kMaxStunTries;
     if (!(nr.upnpDone || waited > 8.0) || !(stunFinished || nr.upnpOk)) return {};
 
@@ -196,7 +239,9 @@ std::string Session::myCode() const {
 }
 
 bool Session::needsReplyCode() const {
-    return role_ == Role::Guest && phase_ == Phase::Connecting && stunOk_ && now() - startTime_ > kReplyCodeAfter;
+    // With the server, it swaps addresses for us (and relays if needed), so no reply code.
+    return role_ == Role::Guest && !viaServer_ && phase_ == Phase::Connecting && stunOk_ &&
+           now() - startTime_ > kReplyCodeAfter;
 }
 
 bool Session::isCandidate(const Endpoint& e) const {
@@ -229,7 +274,7 @@ void Session::updateNat(double t) {
             lastPunch_ = t;
             Writer w;
             w.header(Msg::Punch);
-            for (const auto& p : punchTargets_) sock_.sendTo(p, w.buf.data(), w.buf.size());
+            for (const auto& p : punchTargets_) sendGame(p, w.buf);
         }
         if (punchTargets_.empty() && !myCode().empty()) {
             status_ = nr.upnpOk ? "Waiting for the other pilot (router opened automatically)"
@@ -238,6 +283,134 @@ void Session::updateNat(double t) {
     }
 
     if (needsReplyCode()) status_ = "Can't reach the host yet. Send your reply code to the host.";
+
+    if (nr.serverResolved && nr.server.valid()) {
+        server_ = nr.server;
+        updateServer(t);
+    } else if (viaServer_ && nr.serverResolved) {
+        stop("Can't find the SharedCrew server. Use the long code instead.", false);
+    }
+}
+
+void Session::updateServer(double t) {
+    if (role_ == Role::Host && phase_ == Phase::Waiting) {
+        // Register, and keep registering so the server keeps our code (also keeps the router path open).
+        double every = shortCode_.empty() ? 1.0 : 15.0;
+        if (t - lastRegister_ >= every) {
+            lastRegister_ = t;
+            Writer w;
+            w.put<uint64_t>(token_);
+            w.put<uint32_t>(nat_.result().lanIp);
+            w.put<uint16_t>(localPort_);
+            sendServer(Srv::Register, w);
+        }
+    }
+    if (role_ == Role::Guest && phase_ == Phase::Connecting && viaServer_) {
+        if (!joinOk_ && t - lastJoin_ >= 1.0) {
+            if (joinTries_ >= 8) {
+                stop("No answer from the SharedCrew server. Use the long code instead.", false);
+                return;
+            }
+            lastJoin_ = t;
+            ++joinTries_;
+            Writer w;
+            w.put<uint64_t>(token_);
+            w.buf.insert(w.buf.end(), joinCode_.begin(), joinCode_.end());
+            w.put<uint32_t>(nat_.result().lanIp);
+            w.put<uint16_t>(localPort_);
+            sendServer(Srv::Join, w);
+        }
+        // Direct connection not working after a few seconds: go through the server.
+        if (joinOk_ && !relayAdded_ && t - joinOkAt_ > 4.0) {
+            relayAdded_ = true;
+            candidates_.push_back(server_);
+            status_ = "Connecting through the SharedCrew server...";
+            log("direct connection not working, using the relay");
+        }
+    }
+}
+
+void Session::sendServer(Srv type, const Writer& body) {
+    if (!server_.valid()) return;
+    std::vector<uint8_t> p(kServerMagic, kServerMagic + 4);
+    p.push_back(kServerVersion);
+    p.push_back(static_cast<uint8_t>(type));
+    p.insert(p.end(), body.buf.begin(), body.buf.end());
+    sock_.sendTo(server_, p.data(), p.size());
+}
+
+void Session::sendGame(const Endpoint& to, const std::vector<uint8_t>& data) {
+    if (!to.valid()) return;
+    if (server_.valid() && to == server_) {
+        Writer w;
+        w.buf = data;
+        sendServer(Srv::Relay, w);
+        return;
+    }
+    sock_.sendTo(to, data.data(), data.size());
+}
+
+void Session::handleServer(const uint8_t* data, size_t len, double t) {
+    Reader r(data + 6, len - 6);
+    Srv type = static_cast<Srv>(data[5]);
+    switch (type) {
+        case Srv::Relay:
+            // A game packet from the other pilot, passed on by the server.
+            handlePacket(server_, data + 6, len - 6, t);
+            break;
+        case Srv::Registered:
+            if (role_ == Role::Host && len >= 12) {
+                std::string code(reinterpret_cast<const char*>(data + 6), 6);
+                if (code != shortCode_) log("session code " + code);
+                shortCode_ = code;
+            }
+            break;
+        case Srv::Peer: {
+            if (role_ != Role::Host || phase_ != Phase::Waiting) break;
+            Endpoint pub, lan;
+            pub.ip = r.get<uint32_t>();
+            pub.port = r.get<uint16_t>();
+            lan.ip = r.get<uint32_t>();
+            lan.port = r.get<uint16_t>();
+            if (!r.good()) break;
+            punchTargets_.clear();
+            if (pub.valid()) punchTargets_.push_back(pub);
+            if (lan.valid() && lan != pub) punchTargets_.push_back(lan);
+            punchUntil_ = t + kPunchTime;
+            lastPunch_ = 0;
+            status_ = "Other pilot found, connecting...";
+            log("server: guest at " + pub.str());
+            break;
+        }
+        case Srv::JoinOk: {
+            if (role_ != Role::Guest || phase_ != Phase::Connecting || joinOk_) break;
+            Endpoint pub, lan;
+            pub.ip = r.get<uint32_t>();
+            pub.port = r.get<uint16_t>();
+            lan.ip = r.get<uint32_t>();
+            lan.port = r.get<uint16_t>();
+            if (!r.good()) break;
+            joinOk_ = true;
+            joinOkAt_ = t;
+            if (pub.valid()) candidates_.push_back(pub);
+            if (lan.valid() && lan != pub) candidates_.push_back(lan);
+            lastHello_ = 0;  // say hello straight away
+            status_ = "Host found, connecting...";
+            log("server: host at " + pub.str());
+            break;
+        }
+        case Srv::JoinFail: {
+            if (role_ != Role::Guest || phase_ != Phase::Connecting) break;
+            uint8_t reason = r.get<uint8_t>();
+            stop(reason == 2   ? "That session already has two pilots."
+                 : reason == 3 ? "Too many tries. Wait a minute and try again."
+                               : "Session code not found. Check the code, or ask the host for a new one.",
+                 false);
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 void Session::stop(const std::string& reason, bool notifyPeer) {
@@ -246,9 +419,25 @@ void Session::stop(const std::string& reason, bool notifyPeer) {
         w.header(Msg::Bye);
         send(w);
     }
+    if (role_ == Role::Host && !shortCode_.empty()) {
+        Writer w;
+        w.put<uint64_t>(token_);
+        sendServer(Srv::Unregister, w);
+    }
     setOverrides(false);
     sock_.close();
     nat_.stop();
+    server_ = Endpoint{};
+    peerToken_ = 0;
+    shortCode_.clear();
+    lastRegister_ = 0;
+    viaServer_ = false;
+    joinCode_.clear();
+    joinTries_ = 0;
+    lastJoin_ = 0;
+    joinOk_ = false;
+    joinOkAt_ = 0;
+    relayAdded_ = false;
     candidates_.clear();
     stunOk_ = false;
     stunPublic_ = Endpoint{};
@@ -346,7 +535,7 @@ void Session::update() {
 }
 
 void Session::send(const Writer& w) {
-    if (peer_.valid()) sock_.sendTo(peer_, w.buf.data(), w.buf.size());
+    sendGame(peer_, w.buf);
 }
 
 void Session::receiveAll(double t) {
@@ -355,6 +544,12 @@ void Session::receiveAll(double t) {
     for (int i = 0; i < 500; ++i) {
         int n = sock_.recvFrom(from, buf, sizeof(buf));
         if (n <= 0) break;
+        if (n >= 6 && std::memcmp(buf, kServerMagic, 4) == 0) {
+            if (buf[4] == kServerVersion && server_.valid() && from == server_)
+                handleServer(buf, static_cast<size_t>(n), t);
+            if (phase_ == Phase::Idle) break;
+            continue;
+        }
         if (isStunPacket(buf, static_cast<size_t>(n))) {
             Endpoint pub;
             if (!stunOk_ && parseStunResponse(buf, static_cast<size_t>(n), pub)) {
@@ -379,20 +574,23 @@ void Session::handlePacket(const Endpoint& from, const uint8_t* data, size_t len
 
     // Host: first contact
     if (role_ == Role::Host && type == Msg::Hello) {
+        std::string acf = r.str();
+        uint32_t hash = r.get<uint32_t>();
+        std::string plugVer = r.str();
+        uint64_t token = r.remaining() >= 8 ? r.get<uint64_t>() : 0;
         if (phase_ == Phase::Connected && from != peer_) {
+            // Same guest arriving over a second path (direct + relay): ignore it.
+            if (token != 0 && token == peerToken_) return;
             Writer w;
             w.header(Msg::Reject);
             w.str("This session already has two pilots.");
-            sock_.sendTo(from, w.buf.data(), w.buf.size());
+            sendGame(from, w.buf);
             return;
         }
         if (phase_ == Phase::Connected) {  // our Welcome got lost, send it again
             sendWelcome();
             return;
         }
-        std::string acf = r.str();
-        uint32_t hash = r.get<uint32_t>();
-        std::string plugVer = r.str();
         std::string reason;
         if (version != kProtocolVersion) {
             reason = "Different SharedCrew version (host has " SHAREDCREW_VERSION ", you have " + plugVer + ").";
@@ -405,15 +603,16 @@ void Session::handlePacket(const Endpoint& from, const uint8_t* data, size_t len
             Writer w;
             w.header(Msg::Reject);
             w.str(reason);
-            sock_.sendTo(from, w.buf.data(), w.buf.size());
+            sendGame(from, w.buf);
             log("rejected " + from.str() + ": " + reason);
             return;
         }
         peer_ = from;
+        peerToken_ = token;
         phase_ = Phase::Connected;
         lastRecv_ = t;
         status_ = "Connected - you have the controls";
-        log("pilot joined from " + from.str());
+        log("pilot joined from " + from.str() + (server_.valid() && from == server_ ? " (through the relay)" : ""));
         sendWelcome();
         beginSync();
         return;
@@ -515,7 +714,8 @@ void Session::sendHello() {
     w.str(acfFile_);
     w.put<uint32_t>(profile_.hash);
     w.str(SHAREDCREW_VERSION);
-    for (const auto& c : candidates_) sock_.sendTo(c, w.buf.data(), w.buf.size());
+    w.put<uint64_t>(token_);
+    for (const auto& c : candidates_) sendGame(c, w.buf);
 }
 
 void Session::sendWelcome() {
@@ -565,7 +765,7 @@ void Session::resendReliable(double t) {
     for (auto& p : outQueue_) {
         if (t - p.lastSent >= kResendInterval) {
             p.lastSent = t;
-            if (peer_.valid()) sock_.sendTo(peer_, p.data.data(), p.data.size());
+            sendGame(peer_, p.data);
         }
     }
 }

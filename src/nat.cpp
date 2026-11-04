@@ -371,9 +371,10 @@ void NatHelper::wait() {
     if (thread_.joinable()) thread_.join();
 }
 
-void NatHelper::start(uint16_t localPort, bool openRouterPort) {
+void NatHelper::start(uint16_t localPort, bool openRouterPort, const std::string& serverAddress) {
     stop();
     wait();
+    serverAddress_ = serverAddress;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         stopFlag_ = false;
@@ -415,6 +416,24 @@ void NatHelper::run(uint16_t localPort, bool openRouterPort) {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         result_.lanIp = lan;
+    }
+
+    // SharedCrew server (matchmaking + relay), "host:port".
+    if (!serverAddress_.empty()) {
+        std::string host = serverAddress_;
+        uint16_t port = 51010;
+        size_t colon = host.rfind(':');
+        if (colon != std::string::npos) {
+            port = static_cast<uint16_t>(std::atoi(host.substr(colon + 1).c_str()));
+            host = host.substr(0, colon);
+        }
+        Endpoint ep;
+        std::string err;
+        bool ok = resolveHost(host, port, ep, err);
+        if (!ok) addLog("can't find the SharedCrew server " + serverAddress_);
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (ok) result_.server = ep;
+        result_.serverResolved = true;
     }
 
     // STUN servers (public, free). Resolved here so DNS never blocks X-Plane.

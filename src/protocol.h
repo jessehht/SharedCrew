@@ -8,7 +8,22 @@
 namespace sc {
 
 constexpr uint32_t kMagic = 0x57524353;  // "SCRW"
-constexpr uint16_t kProtocolVersion = 1;
+constexpr uint16_t kProtocolVersion = 2;
+
+// SharedCrew server (matchmaking + relay). Packets start with "SCSV", version, type.
+constexpr uint8_t kServerMagic[4] = {'S', 'C', 'S', 'V'};
+constexpr uint8_t kServerVersion = 1;
+enum class Srv : uint8_t {
+    Register = 1,    // host -> server: u64 token, u32 lanIp, u16 lanPort
+    Registered = 2,  // server -> host: 6 chars code
+    Join = 3,        // guest -> server: u64 token, 6 chars code, u32 lanIp, u16 lanPort
+    JoinOk = 4,      // server -> guest: host public ip/port, host lan ip/port
+    JoinFail = 5,    // server -> guest: u8 reason
+    Peer = 6,        // server -> host: guest public ip/port, guest lan ip/port
+    Relay = 7,       // either way: a game packet passed through the server
+    Unregister = 8,  // host -> server: u64 token
+};
+constexpr const char* kDefaultServer = "sharedcrew.mijngms.com:51010";
 constexpr size_t kMaxPacket = 1200;  // stay under typical internet MTU
 constexpr uint16_t kDefaultPort = 51000;
 

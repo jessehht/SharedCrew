@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <string>
 
 namespace sc {
@@ -6,6 +6,7 @@ namespace sc {
 struct Settings {
     std::string host;
     int port = 51000;
+    std::string server;  // SharedCrew server host:port, "off" = don't use it
 
     void load(const std::string& file);
     void save(const std::string& file) const;

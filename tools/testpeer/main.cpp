@@ -1,4 +1,4 @@
-// SharedCrew test peer: pretends to be the second pilot, so you can test on one PC.
+﻿// SharedCrew test peer: pretends to be the second pilot, so you can test on one PC.
 // Run it, then in X-Plane join 127.0.0.1 port 51000.
 #include <conio.h>
 #include <windows.h>
@@ -135,6 +135,14 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--port") port = static_cast<uint16_t>(std::atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--profiles") profiles = argv[i + 1];
     }
+    std::string serverAddr;
+    bool relayOnly = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--server") serverAddr = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[i + 1] : kDefaultServer;
+        if (a == "--relay-only") relayOnly = true;
+    }
+    if (relayOnly && serverAddr.empty()) serverAddr = kDefaultServer;
 
     printf("SharedCrew test peer\n");
     printf("--------------------\n");
@@ -196,8 +204,35 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    Endpoint peer;
-    bool connected = false;
+    // --server: register with the SharedCrew server, so X-Plane can join with a short code.
+    Endpoint server;
+    uint64_t token = (static_cast<uint64_t>(GetTickCount64()) << 20) ^ GetCurrentProcessId();
+    double lastRegister = -100;
+    std::string shortCode;
+    if (!serverAddr.empty()) {
+        std::string h = serverAddr;
+        uint16_t sp = 51010;
+        size_t colon = h.rfind(':');
+        if (colon != std::string::npos) {
+            sp = static_cast<uint16_t>(std::atoi(h.substr(colon + 1).c_str()));
+            h = h.substr(0, colon);
+        }
+        if (!resolveHost(h, sp, server, err)) {
+            printf("Can't find server %s\n", serverAddr.c_str());
+            return 1;
+        }
+        printf("Using SharedCrew server %s%s\n", server.str().c_str(),
+               relayOnly ? " (relay only: direct connections are ignored)" : "");
+    }
+    auto sendServer = [&](Srv type, const std::vector<uint8_t>& body) {
+        std::vector<uint8_t> p(kServerMagic, kServerMagic + 4);
+        p.push_back(kServerVersion);
+        p.push_back(static_cast<uint8_t>(type));
+        p.insert(p.end(), body.begin(), body.end());
+        sock.sendTo(server, p.data(), p.size());
+    };
+
+    Endpoint peer;    bool connected = false;
     bool iFly = false;
     Names names;
     std::map<int, DrefState> drefs;
@@ -212,7 +247,13 @@ int main(int argc, char** argv) {
     std::vector<std::vector<float>> stream;
     double flyStart = 0;
 
-    auto send = [&](const Writer& w) { sock.sendTo(peer, w.buf.data(), w.buf.size()); };
+    auto rawSend = [&](const std::vector<uint8_t>& data) {
+        if (server.valid() && peer == server)
+            sendServer(Srv::Relay, data);
+        else
+            sock.sendTo(peer, data.data(), data.size());
+    };
+    auto send = [&](const Writer& w) { rawSend(w.buf); };
     auto sendReliable = [&](RelKind kind, const std::vector<uint8_t>& payload) {
         Writer w;
         w.header(Msg::Reliable);
@@ -277,7 +318,27 @@ int main(int argc, char** argv) {
         Endpoint from;
         int n;
         while ((n = sock.recvFrom(from, buf, sizeof(buf))) > 0) {
-            Reader r(buf, n);
+            if (n >= 6 && memcmp(buf, kServerMagic, 4) == 0) {
+                if (!server.valid() || from != server) continue;
+                Srv st = static_cast<Srv>(buf[5]);
+                if (st == Srv::Registered && n >= 12) {
+                    std::string code(reinterpret_cast<char*>(buf + 6), 6);
+                    if (code != shortCode) {
+                        shortCode = code;
+                        printf("\nSession code: %s-%s   (in X-Plane: paste it in 'Code or IP' and click Join)\n\n",
+                               code.substr(0, 3).c_str(), code.substr(3).c_str());
+                    }
+                    continue;
+                }
+                if (st == Srv::Peer) {
+                    printf("  server: X-Plane is looking for us\n");
+                    continue;
+                }
+                if (st != Srv::Relay) continue;
+                memmove(buf, buf + 6, n - 6);  // unwrap the relayed game packet
+                n -= 6;
+                from = server;
+            }            Reader r(buf, n);
             if (r.get<uint32_t>() != kMagic) continue;
             uint16_t ver = r.get<uint16_t>();
             Msg type = static_cast<Msg>(r.get<uint8_t>());
@@ -285,6 +346,7 @@ int main(int argc, char** argv) {
             if (ver != kProtocolVersion) continue;
 
             if (type == Msg::Hello) {
+                if (relayOnly && from != server) continue;
                 std::string acf = r.str();
                 if (!connected) {
                     peer = from;
@@ -402,6 +464,15 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (server.valid() && !connected && t - lastRegister > (shortCode.empty() ? 1.0 : 15.0)) {
+            lastRegister = t;
+            Writer w;
+            w.put<uint64_t>(token);
+            w.put<uint32_t>(0);
+            w.put<uint16_t>(port);
+            sendServer(Srv::Register, w.buf);
+        }
+
         if (connected) {
             if (t - lastRecv > 8.0) {
                 printf("Lost X-Plane.\n\nWaiting for X-Plane...\n");
@@ -416,7 +487,7 @@ int main(int argc, char** argv) {
             }
             if (t - lastResend > 0.25) {
                 lastResend = t;
-                for (auto& [id, data] : outQueue) sock.sendTo(peer, data.data(), data.size());
+                for (auto& [id, data] : outQueue) rawSend(data);
             }
 
             // Fly: 70 m/s (about 135 kt), gentle left/right turns, constant altitude.

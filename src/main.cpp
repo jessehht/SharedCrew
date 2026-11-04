@@ -185,6 +185,10 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 
     if (!netInit()) log("network start failed");
     g_settings.load(settingsFile());
+    if (g_settings.server == "off")
+        g_session.setServer("");
+    else
+        g_session.setServer(g_settings.server.empty() ? kDefaultServer : g_settings.server);
 
     UiActions actions;
     actions.host = onHost;
