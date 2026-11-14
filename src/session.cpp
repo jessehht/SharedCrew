@@ -517,14 +517,15 @@ void Session::update() {
     }
     resendReliable(t);
 
-    // MCDU keys and other short-lived values: every frame, reliably.
+    // Every change goes reliably and in order with button presses, so a pressed command
+    // (e.g. gear toggle) and the switch it moves always arrive in the same order on both PCs.
+    // MCDU keys and other short-lived values are checked every frame, the rest 20x per second.
     scanLocalChanges(true);
-    sendPriorityChanges();
     if (t - lastScan_ >= kScanInterval) {
         lastScan_ = t;
         scanLocalChanges(false);
-        sendDrefs(true);
     }
+    sendChangesReliably();
     if (t - lastSnapshot_ >= kSnapshotInterval) {
         lastSnapshot_ = t;
         sendDrefs(false);
@@ -878,8 +879,8 @@ void Session::sendDrefs(bool onlyDirty) {
     for (size_t i = 0; i < profile_.drefs.size(); ++i) {
         auto& d = profile_.drefs[i];
         if (!sendsChanges(d) || !d.resolved()) continue;
-        if (onlyDirty && (!d.dirty || d.priority)) continue;  // priority changes go reliably
-        d.dirty = false;
+        if (onlyDirty && !d.dirty) continue;
+        if (onlyDirty) d.dirty = false;
         size_t need = 2 + 4 + 1 + 1 + d.lastKnown.size() * 8;
         if (w.size() + need > kMaxPacket) {
             flush();
@@ -895,7 +896,7 @@ void Session::sendDrefs(bool onlyDirty) {
     flush();
 }
 
-void Session::sendPriorityChanges() {
+void Session::sendChangesReliably() {
     // Same layout as a Drefs packet, but as ordered, acknowledged messages.
     Writer w;
     uint16_t count = 0;
@@ -911,7 +912,7 @@ void Session::sendPriorityChanges() {
     };
     for (size_t i = 0; i < profile_.drefs.size(); ++i) {
         auto& d = profile_.drefs[i];
-        if (!d.priority || !d.dirty) continue;
+        if (!d.dirty) continue;
         d.dirty = false;
         size_t need = 2 + 4 + 1 + 1 + d.lastKnown.size() * 8;
         if (w.size() + need > kMaxPacket - 40) flush();

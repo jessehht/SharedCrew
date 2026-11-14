@@ -87,7 +87,7 @@ private:
     void resendReliable(double now);
 
     void scanLocalChanges(bool priority);
-    void sendPriorityChanges();
+    void sendChangesReliably();
     void sendDrefs(bool onlyDirty);
     void applyDrefs(Reader& r);
 

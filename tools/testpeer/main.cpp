@@ -287,6 +287,30 @@ int main(int argc, char** argv) {
         printf("  Q  quit\n\n");
     };
 
+    auto readDrefs = [&](Reader& r) {
+        uint16_t cnt = r.get<uint16_t>();
+        for (uint16_t k = 0; k < cnt && r.good(); ++k) {
+            uint16_t idx = r.get<uint16_t>();
+            uint32_t v = r.get<uint32_t>();
+            uint8_t o = r.get<uint8_t>();
+            uint8_t c = r.get<uint8_t>();
+            std::vector<double> vals(c);
+            for (auto& x : vals) x = r.get<double>();
+            auto& d = drefs[idx];
+            bool newer = v > d.version || (v == d.version && o > d.origin) || d.vals.empty();
+            if (!newer) continue;
+            bool changed = !d.vals.empty() && d.vals != vals;
+            d.version = v;
+            d.origin = o;
+            d.vals = vals;
+            if (changed) {
+                std::string nm = idx < names.drefs.size() ? shortName(names.drefs[idx]) : "#" + std::to_string(idx);
+                printf("  <- X-Plane changed %s =", nm.c_str());
+                for (size_t i = 0; i < vals.size() && i < 4; ++i) printf(" %g", vals[i]);
+                printf(vals.size() > 4 ? " ...\n" : "\n");
+            }
+        }
+    };
     printf("Waiting for X-Plane...\n");
     bool running = true;
     while (running) {
@@ -387,31 +411,9 @@ int main(int argc, char** argv) {
                     havePos = r.good();
                     break;
                 }
-                case Msg::Drefs: {
-                    uint16_t cnt = r.get<uint16_t>();
-                    for (uint16_t k = 0; k < cnt && r.good(); ++k) {
-                        uint16_t idx = r.get<uint16_t>();
-                        uint32_t v = r.get<uint32_t>();
-                        uint8_t o = r.get<uint8_t>();
-                        uint8_t c = r.get<uint8_t>();
-                        std::vector<double> vals(c);
-                        for (auto& x : vals) x = r.get<double>();
-                        auto& d = drefs[idx];
-                        bool newer = v > d.version || (v == d.version && o > d.origin) || d.vals.empty();
-                        if (!newer) continue;
-                        bool changed = !d.vals.empty() && d.vals != vals;
-                        d.version = v;
-                        d.origin = o;
-                        d.vals = vals;
-                        if (changed) {
-                            std::string nm = idx < names.drefs.size() ? shortName(names.drefs[idx]) : "#" + std::to_string(idx);
-                            printf("  <- X-Plane changed %s =", nm.c_str());
-                            for (size_t i = 0; i < vals.size() && i < 4; ++i) printf(" %g", vals[i]);
-                            printf(vals.size() > 4 ? " ...\n" : "\n");
-                        }
-                    }
+                case Msg::Drefs:
+                    readDrefs(r);
                     break;
-                }
                 case Msg::Reliable: {
                     uint32_t id = r.get<uint32_t>();
                     Writer ack;
@@ -421,6 +423,7 @@ int main(int argc, char** argv) {
                     if (id != inId) break;  // X-Plane resends; good enough for a test tool
                     ++inId;
                     RelKind kind = static_cast<RelKind>(r.get<uint8_t>());
+                    if (kind == RelKind::Drefs) readDrefs(r);
                     if (kind == RelKind::Command) {
                         uint16_t idx = r.get<uint16_t>();
                         uint8_t ph = r.get<uint8_t>();
