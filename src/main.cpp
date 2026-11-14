@@ -125,8 +125,8 @@ UiStatus buildStatus() {
     s.busy = g_session.phase() != Phase::Idle;
     s.connected = g_session.connected();
     s.iAmFlying = g_session.iAmFlying();
-    if (g_session.role() == Role::Host) s.role = "Host (captain)";
-    if (g_session.role() == Role::Guest) s.role = "Guest (first officer)";
+    if (g_session.role() == Role::Host) s.role = "Host (this PC computes the aircraft)";
+    if (g_session.role() == Role::Guest) s.role = "Guest";
     if (s.connected) s.controls = s.iAmFlying ? "You are flying" : "Other pilot is flying";
     if (s.connected && g_session.fixedRoles())
         s.controls = g_session.iHaveControl() ? "You: thrust + tiller (2 sticks)"
