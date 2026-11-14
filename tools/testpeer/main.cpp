@@ -367,6 +367,11 @@ int main(int argc, char** argv) {
                     names = loadNames(profiles, acf, acfPath);
                     printf("  %zu datarefs, %zu commands in profile\n", names.drefs.size(), names.commands.size());
                     printHelp();
+                    if (names.fixedRoles) {
+                        // Give X-Plane thrust/tiller first, like a host handing over.
+                        sendReliable(RelKind::ControlFixed, {0});
+                        printf("  X-Plane has thrust/tiller. T = test peer takes them, G = give back\n");
+                    }
                 }
                 Writer w;
                 w.header(Msg::Welcome);
@@ -433,7 +438,7 @@ int main(int argc, char** argv) {
                     } else if (kind == RelKind::TakeControl) {
                         printf("  <- X-Plane asks for the controls: OK\n");
                         iFly = false;
-                        sendReliable(RelKind::ControlState, {0});
+                        sendReliable(names.fixedRoles ? RelKind::ControlFixed : RelKind::ControlState, {0});
                     }
                     break;
                 }
@@ -523,7 +528,8 @@ int main(int argc, char** argv) {
             if (!connected) continue;
             if (c == 'T') {
                 if (names.fixedRoles) {
-                    printf("  this aircraft has fixed roles: X-Plane always computes it, so T is not used\n");
+                    sendReliable(RelKind::ControlFixed, {1});
+                    printf("  -> test peer takes thrust/tiller. In X-Plane the Take controls button should light up.\n");
                 } else if (!havePos) {
                     printf("  no position from X-Plane yet\n");
                 } else if (!iFly) {
@@ -534,6 +540,10 @@ int main(int argc, char** argv) {
                     printf("  -> test peer has the controls. Your aircraft should now follow.\n");
                     if (elev < 300) printf("  (tip: start in the air, the test peer flies at constant altitude)\n");
                 }
+            }
+            if (c == 'G' && names.fixedRoles) {
+                sendReliable(RelKind::ControlFixed, {0});
+                printf("  -> thrust/tiller given back to X-Plane\n");
             }
             if (c == 'G' && iFly) {
                 iFly = false;
