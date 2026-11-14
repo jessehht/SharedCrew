@@ -12,28 +12,29 @@ struct UiActions {
     std::function<void()> takeControls;
 };
 
+enum class UiState { Idle, Hosting, Joining, Connected };
+
 struct UiStatus {
-    std::string status;
-    std::string role;       // "Host", "Guest" or empty
-    std::string controls;   // who flies
-    std::string profile;    // profile title + match info
-    std::string link;       // peer address + ping
-    std::string code;       // session code (host) or reply code (guest)
-    std::string codeLabel;  // "Session code" / "Reply code"
-    bool canLetIn = false;  // host is waiting: the Join button becomes "Let guest in"
-    bool connected = false;
-    bool busy = false;      // hosting/connecting/connected
-    bool iAmFlying = true;
+    UiState state = UiState::Idle;
+    std::string message;     // status or error line
+    std::string aircraft;    // profile title
+    std::string profileNote; // e.g. "SmartCopilot profile"
+    std::string code;        // host: session code, guest: reply code (when needed)
+    bool codeIsShort = true; // host: short server code (no reply-code step needed)
+    // Connected
+    int pingMs = 0;
+    bool thisPcComputes = true;
+    bool fixedRoles = false;
+    bool iHaveControl = true;
     bool canTakeControls = false;
 };
 
-void uiInit(const UiActions& actions, const std::string& host, int port);
+void uiInit(const UiActions& actions, const std::string& lastCode, int port);
 void uiToggle();
 void uiShow();
 bool uiVisible();
 void uiUpdate(const UiStatus& s);
 void uiDestroy();
-std::string uiHostText();
 int uiPort();
 
 }  // namespace sc

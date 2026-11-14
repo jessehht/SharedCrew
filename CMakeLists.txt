@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.20)
-project(SharedCrew VERSION 0.3.2 LANGUAGES CXX)
+project(SharedCrew VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,7 @@ if(WIN32)
         "${XPSDK}/Libraries/Win/XPLM_64.lib"
         "${XPSDK}/Libraries/Win/XPWidgets_64.lib"
         ws2_32
+        opengl32
     )
     set(PLATFORM_DIR win_x64)
     target_compile_options(SharedCrew PRIVATE /W3 /utf-8)

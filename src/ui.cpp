@@ -1,38 +1,72 @@
-﻿#include "ui.h"
+﻿// SharedCrew window: a standard X-Plane 12 floating window (X-Plane draws the frame and title bar),
+// with the content drawn here. Plain, dark, one accent color, like X-Plane's own windows.
+#include "ui.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <GL/gl.h>
+#elif defined(__APPLE__)
+#include <OpenGL/gl.h>
+#else
+#include <GL/gl.h>
 #endif
 
 #include "XPLMDisplay.h"
-#include "XPStandardWidgets.h"
-#include "XPWidgets.h"
+#include "XPLMGraphics.h"
+#include "XPLMProcessing.h"
 
 namespace sc {
 
 namespace {
 
-constexpr int kWidth = 420;
-constexpr int kHeight = 360;
-constexpr int kLabelW = 100;
-constexpr int kSmallBtn = 70;
+constexpr int kWidth = 300;
+constexpr int kPad = 14;
+constexpr int kBtnH = 26;
+constexpr int kFieldH = 26;
+
+// Colors (RGB)
+float kText[3] = {0.90f, 0.91f, 0.92f};
+float kMuted[3] = {0.55f, 0.57f, 0.61f};
+float kError[3] = {0.95f, 0.55f, 0.50f};
+float kWhite[3] = {1.0f, 1.0f, 1.0f};
+const float kFieldBg[3] = {0.09f, 0.10f, 0.11f};
+const float kLine[3] = {0.27f, 0.29f, 0.33f};
+const float kBtnBg[3] = {0.20f, 0.22f, 0.25f};
+const float kBtnHover[3] = {0.25f, 0.27f, 0.31f};
+const float kAccent[3] = {0.18f, 0.48f, 0.82f};
+const float kAccentHover[3] = {0.22f, 0.54f, 0.88f};
+const float kFocus[3] = {0.30f, 0.58f, 0.90f};
+
+enum ButtonId { BtnHost = 1, BtnJoin, BtnPaste, BtnSettings, BtnCopy, BtnStop, BtnLetIn, BtnPasteReply,
+                BtnTake, BtnDisconnect, FieldCode, FieldPort, FieldReply };
+
+struct Hit {
+    int l, t, r, b;
+    int id;
+};
+
+struct Field {
+    std::string text;
+    size_t maxLen = 64;
+    bool digitsOnly = false;
+};
 
 UiActions g_actions;
-XPWidgetID g_window = nullptr;
-XPWidgetID g_status, g_role, g_controls, g_profile, g_link;
-XPWidgetID g_codeLabel, g_code, g_btnCopy;
-XPWidgetID g_inputField, g_btnPaste, g_portField;
-XPWidgetID g_btnHost, g_btnJoin, g_btnStop, g_btnTake;
-XPWidgetID g_hint1, g_hint2;
-std::string g_lastHost;
-std::string g_currentCode;
-bool g_letInMode = false;
-int g_lastPort = 51000;
+UiStatus g_status;
+XPLMWindowID g_window = nullptr;
+std::vector<Hit> g_hits;
+Field g_codeField, g_portField, g_replyField;
+int g_focus = 0;  // FieldCode / FieldPort / FieldReply or 0
+bool g_showSettings = false;
+float g_copiedAt = -100.0f;
+std::string g_hint;  // local validation message
+int g_fontH = 12;
 
-// --- clipboard (session codes are long, so copy/paste matters)
+// ---------------------------------------------------------------- clipboard
 
 void setClipboard(const std::string& text) {
 #ifdef _WIN32
@@ -62,207 +96,459 @@ std::string getClipboard() {
     }
     CloseClipboard();
 #endif
-    // Keep it on one line and trim
     for (auto& c : out)
         if (c == '\r' || c == '\n' || c == '\t') c = ' ';
     while (!out.empty() && out.back() == ' ') out.pop_back();
     while (!out.empty() && out.front() == ' ') out.erase(out.begin());
-    if (out.size() > 200) out.resize(200);
+    if (out.size() > 64) out.resize(64);
     return out;
 }
 
-// --- widgets
+// ---------------------------------------------------------------- drawing helpers
 
-int handler(XPWidgetMessage msg, XPWidgetID, intptr_t p1, intptr_t) {
-    if (msg == xpMessage_CloseButtonPushed) {
-        XPHideWidget(g_window);
-        return 1;
-    }
-    if (msg != xpMsg_PushButtonPressed) return 0;
-    XPWidgetID btn = reinterpret_cast<XPWidgetID>(p1);
-    if (btn == g_btnHost && g_actions.host) g_actions.host(uiPort());
-    if (btn == g_btnJoin) {
-        if (g_letInMode) {
-            if (g_actions.letIn) g_actions.letIn(uiHostText());
-        } else if (g_actions.join) {
-            g_actions.join(uiHostText(), uiPort());
+void fillRect(int l, int t, int r, int b, const float* c) {
+    glColor3f(c[0], c[1], c[2]);
+    glBegin(GL_QUADS);
+    glVertex2i(l, b);
+    glVertex2i(l, t);
+    glVertex2i(r, t);
+    glVertex2i(r, b);
+    glEnd();
+}
+
+void frameRect(int l, int t, int r, int b, const float* c) {
+    glColor3f(c[0], c[1], c[2]);
+    glBegin(GL_LINE_LOOP);
+    glVertex2f(l + 0.5f, b + 0.5f);
+    glVertex2f(l + 0.5f, t - 0.5f);
+    glVertex2f(r - 0.5f, t - 0.5f);
+    glVertex2f(r - 0.5f, b + 0.5f);
+    glEnd();
+}
+
+void hline(int l, int r, int y, const float* c) {
+    glColor3f(c[0], c[1], c[2]);
+    glBegin(GL_LINES);
+    glVertex2f(static_cast<float>(l), y + 0.5f);
+    glVertex2f(static_cast<float>(r), y + 0.5f);
+    glEnd();
+}
+
+int textWidth(const std::string& s) {
+    return static_cast<int>(XPLMMeasureString(xplmFont_Proportional, s.c_str(), static_cast<int>(s.size())));
+}
+
+void text(int x, int topY, const std::string& s, float* color) {
+    // topY = top of the line; X-Plane draws from the baseline.
+    XPLMDrawString(color, x, topY - g_fontH, const_cast<char*>(s.c_str()), nullptr, xplmFont_Proportional);
+}
+
+// Shortens text to fit a width, adding "..." when cut.
+std::string fit(const std::string& s, int width) {
+    if (textWidth(s) <= width) return s;
+    std::string out = s;
+    while (!out.empty() && textWidth(out + "...") > width) out.pop_back();
+    return out + "...";
+}
+
+bool mouseIn(int l, int t, int r, int b) {
+    int x, y;
+    XPLMGetMouseLocationGlobal(&x, &y);
+    return x >= l && x < r && y <= t && y > b;
+}
+
+void button(int l, int t, int r, const std::string& label, int id, bool primary = false) {
+    const int b = t - kBtnH;
+    const bool hover = mouseIn(l, t, r, b);
+    const float* bg = primary ? (hover ? kAccentHover : kAccent) : (hover ? kBtnHover : kBtnBg);
+    fillRect(l, t, r, b, bg);
+    if (!primary) frameRect(l, t, r, b, kLine);
+    const int w = textWidth(label);
+    text(l + (r - l - w) / 2, t - (kBtnH - g_fontH) / 2, label, primary ? kWhite : kText);
+    g_hits.push_back({l, t, r, b, id});
+}
+
+void field(int l, int t, int r, Field& f, int id, const std::string& placeholder) {
+    const int b = t - kFieldH;
+    const bool focused = g_focus == id;
+    fillRect(l, t, r, b, kFieldBg);
+    frameRect(l, t, r, b, focused ? kFocus : kLine);
+    const int tx = l + 8, ty = t - (kFieldH - g_fontH) / 2;
+    if (f.text.empty() && !focused) {
+        text(tx, ty, placeholder, kMuted);
+    } else {
+        text(tx, ty, f.text, kText);
+        // Blinking caret
+        if (focused && static_cast<int>(XPLMGetElapsedTime() * 2) % 2 == 0) {
+            int cx = tx + textWidth(f.text) + 1;
+            glColor3f(kText[0], kText[1], kText[2]);
+            glBegin(GL_LINES);
+            glVertex2f(cx + 0.5f, static_cast<float>(t - 6));
+            glVertex2f(cx + 0.5f, static_cast<float>(b + 6));
+            glEnd();
         }
     }
-    if (btn == g_btnStop && g_actions.disconnect) g_actions.disconnect();
-    if (btn == g_btnTake && g_actions.takeControls) g_actions.takeControls();
-    if (btn == g_btnCopy && !g_currentCode.empty()) setClipboard(g_currentCode);
-    if (btn == g_btnPaste) XPSetWidgetDescriptor(g_inputField, getClipboard().c_str());
+    g_hits.push_back({l, t, r, b, id});
+}
+
+// A label on the left and a value on the right, with a thin line above.
+void row(int l, int r, int t, const std::string& label, const std::string& value) {
+    hline(l, r, t, kLine);
+    text(l, t - 7, label, kMuted);
+    const std::string v = fit(value, (r - l) - textWidth(label) - 16);
+    text(r - textWidth(v), t - 7, v, kText);
+}
+
+// ---------------------------------------------------------------- content
+
+int lineH() { return g_fontH + 6; }
+
+// Draws the content and returns the height it used.
+int drawContent(int L, int T, int R) {
+    g_hits.clear();
+    const int l = L + kPad, r = R - kPad;
+    const int mid = (l + r) / 2;
+    int y = T - kPad;
+    const UiStatus& s = g_status;
+    const bool copied = XPLMGetElapsedTime() - g_copiedAt < 2.0f;
+
+    switch (s.state) {
+        case UiState::Idle: {
+            text(l, y, "Aircraft", kMuted);
+            y -= lineH();
+            text(l, y, fit(s.aircraft, r - l), kText);
+            y -= lineH();
+            if (!s.profileNote.empty()) {
+                text(l, y, fit(s.profileNote, r - l), kMuted);
+                y -= lineH();
+            }
+            y -= 8;
+            button(l, y, r, "Host a flight", BtnHost, true);
+            y -= kBtnH + 16;
+            text(l, y, "Session code", kMuted);
+            y -= lineH();
+            field(l, y, r - 64, g_codeField, FieldCode, "Paste the code");
+            button(r - 56, y, r, "Paste", BtnPaste);
+            y -= kFieldH + 8;
+            button(l, y, r, "Join", BtnJoin);
+            y -= kBtnH + 10;
+            const std::string msg = !g_hint.empty() ? g_hint : s.message;
+            if (!msg.empty()) {
+                // Wrap long messages over two lines
+                int width = r - l;
+                std::string first = msg, rest;
+                if (textWidth(msg) > width) {
+                    size_t cut = msg.size();
+                    while (cut > 0 && (textWidth(msg.substr(0, cut)) > width || msg[cut - 1] != ' ')) --cut;
+                    if (cut == 0) cut = msg.size();
+                    first = msg.substr(0, cut);
+                    rest = msg.substr(cut);
+                }
+                text(l, y, first, kError);
+                y -= lineH();
+                if (!rest.empty()) {
+                    text(l, y, fit(rest, width), kError);
+                    y -= lineH();
+                }
+                y -= 4;
+            }
+            text(l, y, g_showSettings ? "Hide settings" : "Settings", kMuted);
+            g_hits.push_back({l, y, l + textWidth("Hide settings"), y - lineH(), BtnSettings});
+            y -= lineH();
+            if (g_showSettings) {
+                y -= 4;
+                text(l, y - 7, "UDP port", kMuted);
+                field(r - 90, y, r, g_portField, FieldPort, "51000");
+                y -= kFieldH + 4;
+            }
+            break;
+        }
+        case UiState::Hosting: {
+            if (s.code.empty()) {
+                text(l, y, "Making your session code...", kText);
+                y -= lineH();
+            } else {
+                text(l, y, "Send this code to the other pilot", kMuted);
+                y -= lineH() + 6;
+                // Code, drawn twice for weight and spaced out so it reads well
+                int x = l;
+                for (char c : s.code) {
+                    char one[2] = {c, 0};
+                    XPLMDrawString(kWhite, x, y - g_fontH, one, nullptr, xplmFont_Proportional);
+                    XPLMDrawString(kWhite, x + 1, y - g_fontH, one, nullptr, xplmFont_Proportional);
+                    x += textWidth(one) + 4;
+                }
+                y -= lineH() + 10;
+                button(l, y, r, copied ? "Copied" : "Copy code", BtnCopy);
+                y -= kBtnH + 12;
+            }
+            text(l, y, fit(s.message, r - l), kText);
+            y -= lineH() + 4;
+            if (!s.code.empty() && !s.codeIsShort) {
+                // Long code without the server: the guest may send a reply code back.
+                text(l, y, "Got a reply code back?", kMuted);
+                y -= lineH();
+                field(l, y, r - 64, g_replyField, FieldReply, "Paste reply code");
+                button(r - 56, y, r, "Paste", BtnPasteReply);
+                y -= kFieldH + 8;
+                button(l, y, r, "Let guest in", BtnLetIn);
+                y -= kBtnH + 8;
+            }
+            button(l, y, r, "Stop", BtnStop);
+            y -= kBtnH;
+            break;
+        }
+        case UiState::Joining: {
+            text(l, y, fit(s.message, r - l), kText);
+            y -= lineH() + 6;
+            if (!s.code.empty()) {
+                text(l, y, "Send this reply code to the host", kMuted);
+                y -= lineH() + 4;
+                text(l, y, s.code, kWhite);
+                y -= lineH() + 6;
+                button(l, y, r, copied ? "Copied" : "Copy reply code", BtnCopy);
+                y -= kBtnH + 8;
+            }
+            button(l, y, r, "Cancel", BtnDisconnect);
+            y -= kBtnH;
+            break;
+        }
+        case UiState::Connected: {
+            text(l, y, "Connected  " + std::to_string(s.pingMs) + " ms", kText);
+            y -= lineH() + 6;
+            row(l, r, y, "Aircraft", s.aircraft);
+            y -= lineH() + 8;
+            row(l, r, y, "This PC", s.thisPcComputes ? "Computes the aircraft" : "Follows the host");
+            y -= lineH() + 8;
+            if (s.fixedRoles) {
+                row(l, r, y, "Thrust and tiller", s.iHaveControl ? "You" : "Other pilot");
+                y -= lineH() + 8;
+                row(l, r, y, "Sidesticks", "Both");
+            } else {
+                row(l, r, y, "Flying", s.iHaveControl ? "You" : "Other pilot");
+            }
+            y -= lineH() + 8;
+            hline(l, r, y, kLine);
+            y -= 10;
+            if (!s.message.empty() && s.message.rfind("Connected", 0) != 0) {
+                text(l, y, fit(s.message, r - l), kMuted);
+                y -= lineH() + 4;
+            }
+            if (s.canTakeControls) {
+                button(l, y, r, "Take controls", BtnTake, true);
+                y -= kBtnH + 8;
+            }
+            button(l, y, r, "Disconnect", BtnDisconnect);
+            y -= kBtnH;
+            break;
+        }
+    }
+    (void)mid;
+    return T - y + kPad;
+}
+
+// ---------------------------------------------------------------- callbacks
+
+void drawWindow(XPLMWindowID win, void*) {
+    XPLMSetGraphicsState(0, 0, 0, 0, 1, 0, 0);
+    int l, t, r, b;
+    XPLMGetWindowGeometry(win, &l, &t, &r, &b);
+    const int used = drawContent(l, t, r);
+    // Fit the window to its content (keeps the top edge where it is).
+    if (!XPLMWindowIsPoppedOut(win) && std::abs((t - b) - used) > 1) XPLMSetWindowGeometry(win, l, t, r, t - used);
+}
+
+void activateField(int id) {
+    g_focus = id;
+    XPLMTakeKeyboardFocus(g_window);
+}
+
+void releaseField() {
+    if (g_focus && XPLMHasKeyboardFocus(g_window)) XPLMTakeKeyboardFocus(nullptr);
+    g_focus = 0;
+}
+
+void doJoin() {
+    if (g_codeField.text.empty()) {
+        g_hint = "Enter the session code first";
+        return;
+    }
+    g_hint.clear();
+    releaseField();
+    if (g_actions.join) g_actions.join(g_codeField.text, uiPort());
+}
+
+void doLetIn() {
+    if (g_replyField.text.empty()) return;
+    releaseField();
+    if (g_actions.letIn) g_actions.letIn(g_replyField.text);
+}
+
+void onClick(int id) {
+    switch (id) {
+        case BtnHost:
+            g_hint.clear();
+            releaseField();
+            if (g_actions.host) g_actions.host(uiPort());
+            break;
+        case BtnJoin: doJoin(); break;
+        case BtnPaste:
+            g_codeField.text = getClipboard();
+            g_hint.clear();
+            break;
+        case BtnPasteReply: g_replyField.text = getClipboard(); break;
+        case BtnSettings: g_showSettings = !g_showSettings; break;
+        case BtnCopy:
+            if (!g_status.code.empty()) {
+                setClipboard(g_status.code);
+                g_copiedAt = XPLMGetElapsedTime();
+            }
+            break;
+        case BtnStop:
+        case BtnDisconnect:
+            if (g_actions.disconnect) g_actions.disconnect();
+            break;
+        case BtnLetIn: doLetIn(); break;
+        case BtnTake:
+            if (g_actions.takeControls) g_actions.takeControls();
+            break;
+        case FieldCode:
+        case FieldPort:
+        case FieldReply: activateField(id); break;
+        default: break;
+    }
+}
+
+int mouseClick(XPLMWindowID, int x, int y, XPLMMouseStatus status, void*) {
+    if (status != xplm_MouseDown) return 1;
+    int hitId = 0;
+    for (const auto& h : g_hits)
+        if (x >= h.l && x < h.r && y <= h.t && y > h.b) hitId = h.id;
+    if (hitId != FieldCode && hitId != FieldPort && hitId != FieldReply) releaseField();
+    if (hitId) onClick(hitId);
     return 1;
 }
 
-XPWidgetID caption(int l, int t, int r, const char* text) {
-    return XPCreateWidget(l, t, r, t - 18, 1, text, 0, g_window, xpWidgetClass_Caption);
+Field* focusedField() {
+    if (g_focus == FieldCode) return &g_codeField;
+    if (g_focus == FieldPort) return &g_portField;
+    if (g_focus == FieldReply) return &g_replyField;
+    return nullptr;
 }
 
-XPWidgetID row(int l, int r, int t, const char* label) {
-    caption(l, t, l + kLabelW, label);
-    return caption(l + kLabelW, t, r, "");
+void handleKey(XPLMWindowID, char key, XPLMKeyFlags flags, char vkey, void*, int losingFocus) {
+    if (losingFocus) {
+        g_focus = 0;
+        return;
+    }
+    Field* f = focusedField();
+    if (!f || !(flags & xplm_DownFlag)) return;
+    const unsigned char vk = static_cast<unsigned char>(vkey);
+    if ((flags & xplm_ControlFlag) && vk == XPLM_VK_V) {
+        f->text = getClipboard();
+        if (f->text.size() > f->maxLen) f->text.resize(f->maxLen);
+        return;
+    }
+    if (vk == XPLM_VK_BACK) {
+        if (!f->text.empty()) f->text.pop_back();
+        return;
+    }
+    if (vk == XPLM_VK_RETURN || vk == XPLM_VK_ENTER) {
+        if (g_focus == FieldCode) doJoin();
+        else if (g_focus == FieldReply) doLetIn();
+        else releaseField();
+        return;
+    }
+    if (vk == XPLM_VK_ESCAPE || vk == XPLM_VK_TAB) {
+        releaseField();
+        return;
+    }
+    const unsigned char c = static_cast<unsigned char>(key);
+    if (c < 32 || c > 126 || f->text.size() >= f->maxLen) return;
+    if (f->digitsOnly && (c < '0' || c > '9')) return;
+    f->text += static_cast<char>(c);
+    if (g_focus == FieldCode) g_hint.clear();
 }
 
-XPWidgetID button(int l, int t, int r, const char* text) {
-    XPWidgetID b = XPCreateWidget(l, t, r, t - 22, 1, text, 0, g_window, xpWidgetClass_Button);
-    XPSetWidgetProperty(b, xpProperty_ButtonType, xpPushButton);
-    return b;
-}
-
-XPWidgetID field(int l, int t, int r, const std::string& text) {
-    XPWidgetID f = XPCreateWidget(l, t, r, t - 20, 1, text.c_str(), 0, g_window, xpWidgetClass_TextField);
-    XPSetWidgetProperty(f, xpProperty_TextFieldType, xpTextEntryField);
-    XPSetWidgetProperty(f, xpProperty_Enabled, 1);
-    return f;
-}
+XPLMCursorStatus cursor(XPLMWindowID, int, int, void*) { return xplm_CursorDefault; }
+int wheel(XPLMWindowID, int, int, int, int, void*) { return 1; }
 
 void create() {
     int sl, st, sr, sb;
     XPLMGetScreenBoundsGlobal(&sl, &st, &sr, &sb);
-    const int L = sl + 80;
-    const int T = st - 120;
-    const int R = L + kWidth;
-    const int B = T - kHeight;
-
-    g_window = XPCreateWidget(L, T, R, B, 0, "SharedCrew " SHAREDCREW_VERSION, 1, nullptr, xpWidgetClass_MainWindow);
-    XPSetWidgetProperty(g_window, xpProperty_MainWindowHasCloseBoxes, 1);
-    XPAddWidgetCallback(g_window, handler);
-
-    const int l = L + 15, r = R - 15;
-    int y = T - 28;
-    g_status = row(l, r, y, "Status");
-    y -= 20;
-    g_role = row(l, r, y, "Role");
-    y -= 20;
-    g_controls = row(l, r, y, "Controls");
-    y -= 20;
-    g_profile = row(l, r, y, "Aircraft");
-    y -= 20;
-    g_link = row(l, r, y, "Link");
-
-    y -= 34;
-    g_codeLabel = caption(l, y, l + kLabelW, "Your code");
-    g_code = caption(l + kLabelW, y, r - kSmallBtn - 8, "-");
-    g_btnCopy = button(r - kSmallBtn, y + 2, r, "Copy");
-
-    y -= 28;
-    caption(l, y, l + kLabelW, "Code or IP");
-    g_inputField = field(l + kLabelW, y, r - kSmallBtn - 8, g_lastHost);
-    g_btnPaste = button(r - kSmallBtn, y + 1, r, "Paste");
-
-    y -= 26;
-    caption(l, y, l + kLabelW, "Port (UDP)");
-    g_portField = field(l + kLabelW, y, l + kLabelW + 80, std::to_string(g_lastPort));
-
-    y -= 36;
-    const int mid = (l + r) / 2;
-    g_btnHost = button(l, y, mid - 5, "Host a session");
-    g_btnJoin = button(mid + 5, y, r, "Join");
-    y -= 30;
-    g_btnTake = button(l, y, mid - 5, "Take controls");
-    g_btnStop = button(mid + 5, y, r, "Disconnect");
-
-    y -= 34;
-    g_hint1 = caption(l, y, r, "");
-    g_hint2 = caption(l, y - 16, r, "");
+    XPLMCreateWindow_t p{};
+    p.structSize = sizeof(p);
+    p.left = sl + 80;
+    p.top = st - 140;
+    p.right = p.left + kWidth;
+    p.bottom = p.top - 300;
+    p.visible = 1;
+    p.drawWindowFunc = drawWindow;
+    p.handleMouseClickFunc = mouseClick;
+    p.handleRightClickFunc = mouseClick;
+    p.handleKeyFunc = handleKey;
+    p.handleCursorFunc = cursor;
+    p.handleMouseWheelFunc = wheel;
+    p.decorateAsFloatingWindow = xplm_WindowDecorationRoundRectangle;
+    p.layer = xplm_WindowLayerFloatingWindows;
+    g_window = XPLMCreateWindowEx(&p);
+    XPLMSetWindowTitle(g_window, "SharedCrew");
+    XPLMSetWindowResizingLimits(g_window, kWidth, 120, kWidth + 200, 600);
+    XPLMSetWindowPositioningMode(g_window, xplm_WindowPositionFree, -1);
 }
-
-void setText(XPWidgetID w, const std::string& s) {
-    char cur[512] = {};
-    XPGetWidgetDescriptor(w, cur, sizeof(cur) - 1);
-    if (s != cur) XPSetWidgetDescriptor(w, s.c_str());
-}
-
-void enable(XPWidgetID w, bool on) { XPSetWidgetProperty(w, xpProperty_Enabled, on ? 1 : 0); }
 
 }  // namespace
 
-void uiInit(const UiActions& actions, const std::string& host, int port) {
+void uiInit(const UiActions& actions, const std::string& lastCode, int port) {
     g_actions = actions;
-    g_lastHost = host;
-    g_lastPort = port;
+    g_codeField.text = lastCode;
+    g_codeField.maxLen = 64;
+    g_portField.text = std::to_string(port);
+    g_portField.maxLen = 5;
+    g_portField.digitsOnly = true;
+    g_replyField.maxLen = 64;
+    int w = 0, h = 0, digits = 0;
+    XPLMGetFontDimensions(xplmFont_Proportional, &w, &h, &digits);
+    if (h > 0) g_fontH = h;
 }
 
 void uiShow() {
     if (!g_window) create();
-    XPShowWidget(g_window);
-    XPBringRootWidgetToFront(g_window);
+    XPLMSetWindowIsVisible(g_window, 1);
+    XPLMBringWindowToFront(g_window);
 }
 
 void uiToggle() {
-    if (uiVisible())
-        XPHideWidget(g_window);
-    else
+    if (uiVisible()) {
+        releaseField();
+        XPLMSetWindowIsVisible(g_window, 0);
+    } else {
         uiShow();
+    }
 }
 
-bool uiVisible() { return g_window && XPIsWidgetVisible(g_window); }
+bool uiVisible() { return g_window && XPLMGetWindowIsVisible(g_window); }
 
 void uiUpdate(const UiStatus& s) {
-    if (!g_window) return;
-    setText(g_status, s.status);
-    setText(g_role, s.role.empty() ? "-" : s.role);
-    setText(g_controls, s.controls.empty() ? "-" : s.controls);
-    setText(g_profile, s.profile);
-    setText(g_link, s.link.empty() ? "-" : s.link);
-
-    g_currentCode = s.code;
-    setText(g_codeLabel, s.codeLabel.empty() ? "Your code" : s.codeLabel);
-    setText(g_code, s.code.empty() ? (s.busy && !s.connected ? "working..." : "-") : s.code);
-    enable(g_btnCopy, !s.code.empty());
-
-    g_letInMode = s.canLetIn;
-    setText(g_btnJoin, s.canLetIn ? "Let guest in" : "Join");
-
-    const bool editable = !s.busy || s.canLetIn;
-    enable(g_btnHost, !s.busy);
-    enable(g_btnJoin, editable);
-    enable(g_inputField, editable);
-    enable(g_btnPaste, editable);
-    enable(g_portField, !s.busy);
-    enable(g_btnStop, s.busy);
-    enable(g_btnTake, s.canTakeControls);
-
-    // Short instructions for the current step
-    std::string h1, h2;
-    if (!s.busy) {
-        h1 = "Host: click Host a session and send your code to the other pilot.";
-        h2 = "Other pilot: paste the code and click Join.";
-    } else if (s.canLetIn) {
-        h1 = "Send the session code to the other pilot.";
-        h2 = "Got a reply code back? Paste it and click Let guest in.";
-    } else if (!s.connected && !s.code.empty()) {
-        h1 = "Send this reply code to the host.";
-        h2 = "The host pastes it and clicks Let guest in.";
+    // A new state clears the local hint and the reply field.
+    if (s.state != g_status.state) {
+        g_hint.clear();
+        if (s.state != UiState::Hosting) g_replyField.text.clear();
     }
-    setText(g_hint1, h1);
-    setText(g_hint2, h2);
+    g_status = s;
 }
 
 void uiDestroy() {
-    if (g_window) XPDestroyWidget(g_window, 1);
+    if (g_window) {
+        releaseField();
+        XPLMDestroyWindow(g_window);
+    }
     g_window = nullptr;
 }
 
-std::string uiHostText() {
-    if (!g_window) return g_lastHost;
-    char buf[256] = {};
-    XPGetWidgetDescriptor(g_inputField, buf, sizeof(buf) - 1);
-    std::string s = buf;
-    while (!s.empty() && s.back() == ' ') s.pop_back();
-    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
-    g_lastHost = s;
-    return s;
-}
-
 int uiPort() {
-    if (!g_window) return g_lastPort;
-    char buf[32] = {};
-    XPGetWidgetDescriptor(g_portField, buf, sizeof(buf) - 1);
-    int p = std::atoi(buf);
-    if (p > 0 && p < 65536) g_lastPort = p;
-    return g_lastPort;
+    int p = std::atoi(g_portField.text.c_str());
+    return (p > 0 && p < 65536) ? p : 51000;
 }
 
 }  // namespace sc

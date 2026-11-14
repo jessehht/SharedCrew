@@ -140,35 +140,36 @@ void reloadProfile() {
 
 UiStatus buildStatus() {
     UiStatus s;
-    s.status = g_session.status();
-    s.busy = g_session.phase() != Phase::Idle;
-    s.connected = g_session.connected();
-    s.iAmFlying = g_session.iAmFlying();
-    if (g_session.role() == Role::Host) s.role = "Host (this PC computes the aircraft)";
-    if (g_session.role() == Role::Guest) s.role = "Guest";
-    if (s.connected) s.controls = s.iAmFlying ? "You are flying" : "Other pilot is flying";
-    if (s.connected && g_session.fixedRoles())
-        s.controls = g_session.iHaveControl() ? "You: thrust + tiller (2 sticks)"
-                                              : "Other: thrust + tiller (2 sticks)";
-    s.canTakeControls = s.connected && !g_session.iHaveControl();
+    switch (g_session.phase()) {
+        case Phase::Idle: s.state = UiState::Idle; break;
+        case Phase::Waiting: s.state = UiState::Hosting; break;
+        case Phase::Connecting: s.state = UiState::Joining; break;
+        case Phase::Connected: s.state = UiState::Connected; break;
+    }
+    s.message = g_session.status();
+    if (s.message == "Not connected" || s.message == "Disconnected") s.message.clear();
 
-    s.profile = g_profile.title;
-    int missing = g_profile.unresolvedCount();
-    if (missing > 0) s.profile += " (" + std::to_string(missing) + " items not found)";
+    // Aircraft name without the "(SmartCopilot config)" part, which goes on its own line.
+    s.aircraft = g_profile.title;
+    const std::string scp = " (SmartCopilot config)";
+    if (s.aircraft.size() > scp.size() && s.aircraft.compare(s.aircraft.size() - scp.size(), scp.size(), scp) == 0)
+        s.aircraft.resize(s.aircraft.size() - scp.size());
+    if (g_profile.fromSmartCopilot)
+        s.profileNote = "Uses the aircraft's SmartCopilot file";
+    else if (!g_profile.file.empty())
+        s.profileNote = "Profile " + g_profile.file;
+    else
+        s.profileNote = "Standard X-Plane switches";
 
     s.code = g_session.myCode();
-    s.canLetIn = g_session.waitingForGuest();
-    if (g_session.role() == Role::Host) s.codeLabel = "Session code";
-    if (g_session.role() == Role::Guest) {
-        s.codeLabel = "Reply code";
-        if (!g_session.needsReplyCode()) s.code.clear();  // only needed if the host can't be reached
-    }
+    s.codeIsShort = s.code.size() <= 7;
+    if (g_session.role() == Role::Guest && !g_session.needsReplyCode()) s.code.clear();
 
-    if (s.connected) {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "%s, ping %.0f ms", g_session.peerText().c_str(), g_session.pingMs());
-        s.link = buf;
-    }
+    s.pingMs = static_cast<int>(g_session.pingMs() + 0.5);
+    s.thisPcComputes = g_session.iAmFlying();
+    s.fixedRoles = g_session.fixedRoles();
+    s.iHaveControl = g_session.iHaveControl();
+    s.canTakeControls = g_session.connected() && !g_session.iHaveControl();
     return s;
 }
 
@@ -186,7 +187,7 @@ float flightLoop(float elapsed, float, int, void*) {
     g_session.update();
 
     g_uiTimer += elapsed;
-    if (g_uiTimer >= 0.25f && uiVisible()) {
+    if (g_uiTimer >= 0.2f && uiVisible()) {
         g_uiTimer = 0;
         uiUpdate(buildStatus());
     }
@@ -197,13 +198,10 @@ void onHost(int port) {
     g_settings.port = port;
     g_settings.save(settingsFile());
     g_session.startHost(static_cast<uint16_t>(port));
+    uiUpdate(buildStatus());
 }
-
 void onJoin(const std::string& host, int port) {
-    if (host.empty()) {
-        uiUpdate(buildStatus());
-        return;
-    }
+    if (host.empty()) return;
     g_settings.host = host;
     g_settings.port = port;
     g_settings.save(settingsFile());
