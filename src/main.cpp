@@ -46,13 +46,19 @@ int scpRole(void*) {
     return g_session.iAmFlying() ? 2 : 1;
 }
 
+int scpControl(void*) {
+    if (!g_session.connected()) return 0;
+    return g_session.iHaveControl() ? 2 : 1;
+}
+
 void registerScpDatarefs() {
     for (const char* name : {"scp/api/ismaster", "scp/api/hascontrol_1"}) {
         if (XPLMFindDataRef(name)) {
             log(std::string(name) + " already exists (SmartCopilot installed?), not adding it");
             continue;
         }
-        g_scpRefs.push_back(XPLMRegisterDataAccessor(name, xplmType_Int, 0, scpRole, nullptr, nullptr, nullptr,
+        auto reader = std::string(name) == "scp/api/ismaster" ? scpRole : scpControl;
+        g_scpRefs.push_back(XPLMRegisterDataAccessor(name, xplmType_Int, 0, reader, nullptr, nullptr, nullptr,
                                                      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                                                      nullptr, nullptr, nullptr));
     }
@@ -123,8 +129,9 @@ UiStatus buildStatus() {
     if (g_session.role() == Role::Guest) s.role = "Guest (first officer)";
     if (s.connected) s.controls = s.iAmFlying ? "You are flying" : "Other pilot is flying";
     if (s.connected && g_session.fixedRoles())
-        s.controls = s.iAmFlying ? "Both fly, your PC computes the aircraft" : "Both fly, other PC computes the aircraft";
-    s.canTakeControls = s.connected && !s.iAmFlying && !g_session.fixedRoles();
+        s.controls = g_session.iHaveControl() ? "You: thrust + tiller (2 sticks)"
+                                              : "Other: thrust + tiller (2 sticks)";
+    s.canTakeControls = s.connected && !g_session.iHaveControl();
 
     s.profile = g_profile.title;
     int missing = g_profile.unresolvedCount();

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // One shared-cockpit session between two X-Plane instances.
 #include <cstdint>
 #include <deque>
@@ -58,6 +58,8 @@ public:
     bool iAmFlying() const;
     // Both pilots fly together and the controls can't be handed over (e.g. ToLiss Airbus).
     bool fixedRoles() const { return profile_.fixedRoles; }
+    // Who handles thrust, tiller and rudder (with fixed roles this can differ from iAmFlying).
+    bool iHaveControl() const;
     double pingMs() const { return rtt_ * 1000.0; }
     const std::string& status() const { return status_; }
     std::string peerText() const { return peer_.valid() ? peer_.str() : std::string(); }
@@ -102,6 +104,7 @@ private:
     void applyRemoteState(double now);
     void setOverrides(bool on);
     void setHostIsMaster(bool v);
+    void setHostHasControl(bool v);
     void updateNat(double now);
     void updateServer(double now);
     bool isCandidate(const Endpoint& e) const;
@@ -129,6 +132,7 @@ private:
     double rtt_ = 0;
 
     bool hostIsMaster_ = true;
+    bool hostHasControl_ = true;  // fixed roles: who has thrust/tiller/rudder
     bool overridesOn_ = false;
     bool placed_ = false;
 

@@ -46,7 +46,8 @@ enum class RelKind : uint8_t {
     Command = 1,       // u16 command index, u8 phase
     TakeControl = 2,   // guest asks host for controls
     ControlState = 3,  // host -> guest: u8 hostIsMaster
-    Drefs = 4,         // priority values, same layout as Msg::Drefs
+    Drefs = 4,         // switch changes, same layout as Msg::Drefs
+    ControlFixed = 5,  // host -> guest: u8 hostHasControl (fixed roles)
 };
 
 class Writer {

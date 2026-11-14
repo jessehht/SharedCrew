@@ -448,6 +448,7 @@ void Session::stop(const std::string& reason, bool notifyPeer) {
     if (!reason.empty()) log("session ended: " + reason);
     role_ = Role::None;
     phase_ = Phase::Idle;
+    hostHasControl_ = true;
     peer_ = Endpoint{};
     status_ = reason.empty() ? "Not connected" : reason;
     outQueue_.clear();
@@ -463,10 +464,30 @@ bool Session::iAmFlying() const {
     return role_ == Role::Host ? hostIsMaster_ : !hostIsMaster_;
 }
 
+bool Session::iHaveControl() const {
+    if (phase_ != Phase::Connected) return true;
+    if (!profile_.fixedRoles) return iAmFlying();
+    return role_ == Role::Host ? hostHasControl_ : !hostHasControl_;
+}
+
+void Session::setHostHasControl(bool v) {
+    if (hostHasControl_ == v) return;
+    hostHasControl_ = v;
+    log(iHaveControl() ? "you have the controls" : "the other pilot has the controls");
+    status_ = iHaveControl() ? "Connected - you have the controls" : "Connected - other pilot has the controls";
+}
+
 void Session::takeControls() {
-    if (phase_ != Phase::Connected || iAmFlying()) return;
+    if (phase_ != Phase::Connected || iHaveControl()) return;
     if (profile_.fixedRoles) {
-        status_ = "In this aircraft both pilots fly at the same time";
+        // The host's PC keeps computing the aircraft; only thrust, tiller and rudder change hands.
+        if (role_ == Role::Host) {
+            setHostHasControl(true);
+            sendReliable(RelKind::ControlFixed, {1});
+        } else {
+            sendReliable(RelKind::TakeControl, {});
+            status_ = "Asking for controls...";
+        }
         return;
     }
     if (role_ == Role::Host) {
@@ -539,7 +560,8 @@ void Session::update() {
         }
     } else {
         applyRemoteState(t);
-        if (t - lastState_ >= kStateInterval) {
+        // Thrust, tiller, rudder... only from the pilot who has the controls.
+        if (iHaveControl() && t - lastState_ >= kStateInterval) {
             lastState_ = t;
             sendBack();
         }
@@ -807,11 +829,20 @@ void Session::handleReliable(RelKind kind, Reader& r) {
             applyDrefs(r);
             break;
         case RelKind::TakeControl:
-            if (role_ == Role::Host && !profile_.fixedRoles) {
+            if (role_ != Role::Host) break;
+            if (profile_.fixedRoles) {
+                setHostHasControl(false);
+                sendReliable(RelKind::ControlFixed, {0});
+            } else {
                 setHostIsMaster(false);
                 sendReliable(RelKind::ControlState, {0});
             }
             break;
+        case RelKind::ControlFixed: {
+            uint8_t v = r.get<uint8_t>();
+            if (r.good() && role_ == Role::Guest) setHostHasControl(v != 0);
+            break;
+        }
         case RelKind::ControlState: {
             uint8_t v = r.get<uint8_t>();
             if (r.good() && role_ == Role::Guest) setHostIsMaster(v != 0);
