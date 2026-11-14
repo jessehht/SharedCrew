@@ -779,6 +779,7 @@ void Session::beginSync() {
         if (d.resolved()) d.read(d.lastKnown);
     }
     for (auto& c : profile_.commands) c.suppressBegin = c.suppressEnd = 0;
+    for (auto& d : profile_.drefs) d.suppressBegin = d.suppressEnd = 0;
     nextOutId_ = nextInId_ = 1;
     outQueue_.clear();
     inBuffer_.clear();
@@ -817,15 +818,16 @@ void Session::handleReliable(RelKind kind, Reader& r) {
         case RelKind::Command: {
             uint16_t idx = r.get<uint16_t>();
             uint8_t phase = r.get<uint8_t>();
-            if (!r.good() || idx >= profile_.commands.size()) return;
-            auto& c = profile_.commands[idx];
-            if (!c.ref) return;
+            XPLMCommandRef ref;
+            int* sb;
+            int* se;
+            if (!r.good() || !commandSlot(idx, ref, sb, se)) return;
             if (phase == xplm_CommandBegin) {
-                c.suppressBegin++;
-                XPLMCommandBegin(c.ref);
+                (*sb)++;
+                XPLMCommandBegin(ref);
             } else if (phase == xplm_CommandEnd) {
-                c.suppressEnd++;
-                XPLMCommandEnd(c.ref);
+                (*se)++;
+                XPLMCommandEnd(ref);
             }
             break;
         }
@@ -855,21 +857,45 @@ void Session::handleReliable(RelKind kind, Reader& r) {
     }
 }
 
-void Session::onLocalCommand(int index, int phase) {
-    if (index < 0 || index >= static_cast<int>(profile_.commands.size())) return;
-    auto& c = profile_.commands[index];
+bool Session::commandSlot(uint16_t wireIndex, XPLMCommandRef& ref, int*& suppressBegin, int*& suppressEnd) {
+    // Wire index: command list index, or 0x8000 | index for a command listed among the datarefs.
+    if (wireIndex & 0x8000) {
+        size_t i = wireIndex & 0x7FFF;
+        if (i >= profile_.drefs.size() || !profile_.drefs[i].cmd) return false;
+        auto& d = profile_.drefs[i];
+        ref = d.cmd;
+        suppressBegin = &d.suppressBegin;
+        suppressEnd = &d.suppressEnd;
+        return true;
+    }
+    if (wireIndex >= profile_.commands.size() || !profile_.commands[wireIndex].ref) return false;
+    auto& c = profile_.commands[wireIndex];
+    ref = c.ref;
+    suppressBegin = &c.suppressBegin;
+    suppressEnd = &c.suppressEnd;
+    return true;
+}
+
+void Session::onLocalCommand(int code, int phase) {
+    if (code < 0) return;
+    const uint16_t wire = (code & kDrefCommand) ? static_cast<uint16_t>(0x8000 | (code & 0x7FFF))
+                                                : static_cast<uint16_t>(code);
+    XPLMCommandRef ref;
+    int* sb;
+    int* se;
+    if (!commandSlot(wire, ref, sb, se)) return;
     // Replays of the other pilot's presses must not be sent back.
-    if (phase == xplm_CommandBegin && c.suppressBegin > 0) {
-        c.suppressBegin--;
+    if (phase == xplm_CommandBegin && *sb > 0) {
+        (*sb)--;
         return;
     }
-    if (phase == xplm_CommandEnd && c.suppressEnd > 0) {
-        c.suppressEnd--;
+    if (phase == xplm_CommandEnd && *se > 0) {
+        (*se)--;
         return;
     }
     if (phase_ != Phase::Connected || phase == xplm_CommandContinue) return;
     std::vector<uint8_t> payload(3);
-    uint16_t idx = static_cast<uint16_t>(index);
+    uint16_t idx = wire;
     std::memcpy(payload.data(), &idx, 2);
     payload[2] = static_cast<uint8_t>(phase);
     sendReliable(RelKind::Command, payload);

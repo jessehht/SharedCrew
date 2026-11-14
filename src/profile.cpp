@@ -154,7 +154,7 @@ std::string DrefEntry::label() const {
 int Profile::unresolvedCount() const {
     int n = 0;
     for (const auto& d : drefs)
-        if (!d.resolved()) ++n;
+        if (!d.resolved() && !d.cmd) ++n;
     for (const auto& c : commands)
         if (!c.ref) ++n;
     return n;
@@ -162,7 +162,16 @@ int Profile::unresolvedCount() const {
 
 void Profile::resolvePending(bool logMissing) {
     for (auto& d : drefs) {
-        if (!d.resolved() && !d.resolve() && logMissing && !d.failed) log("dataref not found: " + d.label());
+        if (d.resolved() || d.cmd || d.failed) continue;
+        if (d.resolve()) continue;
+        if (d.index < 0) {
+            d.cmd = XPLMFindCommand(d.name.c_str());
+            if (d.cmd) {
+                log(d.name + " is a command, its presses are mirrored");
+                continue;
+            }
+        }
+        if (logMissing) log("dataref not found: " + d.label());
     }
     for (auto& c : commands) {
         if (!c.ref) {

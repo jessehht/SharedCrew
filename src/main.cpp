@@ -69,12 +69,25 @@ int onProfileCommand(XPLMCommandRef, XPLMCommandPhase phase, void* refcon) {
     return 1;  // always let X-Plane / the aircraft handle the press as normal
 }
 
+// refcon: index in the profile's command list, or kDrefCommand | index for a command
+// that was listed among the datarefs.
+void* commandRefcon(size_t i, bool inDrefs) {
+    return reinterpret_cast<void*>(static_cast<intptr_t>(inDrefs ? (kDrefCommand | static_cast<int>(i)) : static_cast<int>(i)));
+}
+
 void registerCommandHandlers() {
     for (size_t i = 0; i < g_profile.commands.size(); ++i) {
         auto& c = g_profile.commands[i];
         if (c.ref && !c.handlerRegistered) {
-            XPLMRegisterCommandHandler(c.ref, onProfileCommand, 1, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+            XPLMRegisterCommandHandler(c.ref, onProfileCommand, 1, commandRefcon(i, false));
             c.handlerRegistered = true;
+        }
+    }
+    for (size_t i = 0; i < g_profile.drefs.size(); ++i) {
+        auto& d = g_profile.drefs[i];
+        if (d.cmd && !d.handlerRegistered) {
+            XPLMRegisterCommandHandler(d.cmd, onProfileCommand, 1, commandRefcon(i, true));
+            d.handlerRegistered = true;
         }
     }
 }
@@ -83,9 +96,15 @@ void unregisterCommandHandlers() {
     for (size_t i = 0; i < g_profile.commands.size(); ++i) {
         auto& c = g_profile.commands[i];
         if (c.handlerRegistered) {
-            XPLMUnregisterCommandHandler(c.ref, onProfileCommand, 1,
-                                         reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+            XPLMUnregisterCommandHandler(c.ref, onProfileCommand, 1, commandRefcon(i, false));
             c.handlerRegistered = false;
+        }
+    }
+    for (size_t i = 0; i < g_profile.drefs.size(); ++i) {
+        auto& d = g_profile.drefs[i];
+        if (d.handlerRegistered) {
+            XPLMUnregisterCommandHandler(d.cmd, onProfileCommand, 1, commandRefcon(i, true));
+            d.handlerRegistered = false;
         }
     }
 }

@@ -107,6 +107,7 @@ private:
     void setHostHasControl(bool v);
     void updateNat(double now);
     void updateServer(double now);
+    bool commandSlot(uint16_t wireIndex, XPLMCommandRef& ref, int*& suppressBegin, int*& suppressEnd);
     bool isCandidate(const Endpoint& e) const;
     // All game packets go through here: packets to the server are wrapped for the relay.
     void sendGame(const Endpoint& to, const std::vector<uint8_t>& data);

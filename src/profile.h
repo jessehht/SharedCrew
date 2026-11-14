@@ -28,6 +28,13 @@ struct DrefEntry {
     double applyTolerance = 0;
     bool failed = false;  // exists but can't be used (wrong type): don't try again
 
+    // Some aircraft files list a command among the datarefs (e.g. transponder IDENT).
+    // If no dataref has this name but a command does, the press is mirrored instead.
+    XPLMCommandRef cmd = nullptr;
+    bool handlerRegistered = false;
+    int suppressBegin = 0;
+    int suppressEnd = 0;
+
     XPLMDataRef ref = nullptr;
     XPLMDataTypeID type = 0;
     bool writable = false;
@@ -51,6 +58,9 @@ struct DrefEntry {
     void write(const std::vector<double>& v) const;
     std::string label() const;
 };
+
+// Command handler refcon flag: the command is listed among the datarefs (index into drefs).
+constexpr int kDrefCommand = 0x10000;
 
 struct CommandEntry {
     std::string name;
