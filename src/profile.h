@@ -10,14 +10,20 @@
 namespace sc {
 
 enum class EntryKind {
-    Sync,    // two-way: whoever changes it last wins (switches, knobs, radios)
-    Stream,  // one-way from the pilot flying, every frame (yoke, throttle, fuel)
+    Sync,        // two-way: whoever changes it last wins (switches, knobs, radios)
+    Stream,      // one-way from the pilot flying, every frame (yoke, throttle, fuel)
+    MasterSync,  // one-way from the pilot flying, only when it changes (loading, weather)
+    Back,        // one-way to the pilot flying, every frame (the other pilot's stick, tiller)
+    Override,    // set to 1 on the other pilot's PC while connected
 };
 
 struct DrefEntry {
     EntryKind kind = EntryKind::Sync;
     std::string name;
     int index = -1;  // -1 = whole value/array, otherwise a single array element
+    // Short-lived values (MCDU key presses, aircraft sync channels): checked every frame
+    // and delivered reliably and in order, so no key press is ever lost.
+    bool priority = false;
 
     XPLMDataRef ref = nullptr;
     XPLMDataTypeID type = 0;
@@ -32,6 +38,11 @@ struct DrefEntry {
     bool warnedReadOnly = false;
 
     bool resolved() const { return ref != nullptr && count > 0; }
+    // Text / byte value (no number types at all)
+    bool isData() const {
+        return (type & xplmType_Data) &&
+               !(type & (xplmType_Double | xplmType_Float | xplmType_Int | xplmType_FloatArray | xplmType_IntArray));
+    }
     bool resolve();
     void read(std::vector<double>& out) const;
     void write(const std::vector<double>& v) const;
@@ -50,6 +61,10 @@ struct Profile {
     std::string title;       // e.g. "Cessna 172 (Laminar)"
     std::string file;        // matched profile file, empty if only default
     bool useDefault = true;
+    // Fixed roles: one PC always computes the aircraft and both pilots fly together
+    // (like the real Airbus: two sidesticks). Used for SmartCopilot-style aircraft.
+    bool fixedRoles = false;
+    bool fromSmartCopilot = false;
     std::vector<DrefEntry> drefs;
     std::vector<CommandEntry> commands;
     uint32_t hash = 0;  // both pilots must have the same hash
@@ -60,6 +75,8 @@ struct Profile {
 };
 
 // Picks the profile whose "match" lines fit the .acf file name, plus default.txt.
-bool loadProfile(const std::string& profilesDir, const std::string& acfFile, Profile& out, std::string& err);
+// If none matches and the aircraft folder has a smartcopilot.cfg, that file is used.
+bool loadProfile(const std::string& profilesDir, const std::string& acfFile, const std::string& acfPath,
+                 Profile& out, std::string& err);
 
 }  // namespace sc

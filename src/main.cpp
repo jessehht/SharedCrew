@@ -1,7 +1,8 @@
-// SharedCrew - shared cockpit for X-Plane 12.
+﻿// SharedCrew - shared cockpit for X-Plane 12.
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "XPLMDataAccess.h"
 #include "XPLMMenus.h"
@@ -36,6 +37,27 @@ bool g_missingLogged = false;
 
 std::string settingsFile() { return g_pluginDir + "/settings.txt"; }
 
+// SmartCopilot-compatible role datarefs. Aircraft like the ToLiss Airbus read these to know
+// which PC computes the systems. 0 = not connected, 1 = other PC is master, 2 = this PC is master.
+std::vector<XPLMDataRef> g_scpRefs;
+
+int scpRole(void*) {
+    if (!g_session.connected()) return 0;
+    return g_session.iAmFlying() ? 2 : 1;
+}
+
+void registerScpDatarefs() {
+    for (const char* name : {"scp/api/ismaster", "scp/api/hascontrol_1"}) {
+        if (XPLMFindDataRef(name)) {
+            log(std::string(name) + " already exists (SmartCopilot installed?), not adding it");
+            continue;
+        }
+        g_scpRefs.push_back(XPLMRegisterDataAccessor(name, xplmType_Int, 0, scpRole, nullptr, nullptr, nullptr,
+                                                     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                     nullptr, nullptr, nullptr));
+    }
+}
+
 int onProfileCommand(XPLMCommandRef, XPLMCommandPhase phase, void* refcon) {
     g_session.onLocalCommand(static_cast<int>(reinterpret_cast<intptr_t>(refcon)), phase);
     return 1;  // always let X-Plane / the aircraft handle the press as normal
@@ -69,10 +91,18 @@ void reloadProfile() {
     char file[512] = {}, path[1024] = {};
     XPLMGetNthAircraftModel(0, file, path);
     g_acfFile = file;
-    g_session.setAircraft(g_acfFile);
+    std::string full = path, rel;
+    for (const char* marker : {"\\Aircraft\\", "/Aircraft/"}) {
+        size_t at = full.find(marker);
+        if (at != std::string::npos) {
+            rel = full.substr(at + 10);
+            break;
+        }
+    }
+    g_session.setAircraft(g_acfFile, rel);
 
     std::string err;
-    if (!loadProfile(g_pluginDir + "/profiles", g_acfFile, g_profile, err)) {
+    if (!loadProfile(g_pluginDir + "/profiles", g_acfFile, path, g_profile, err)) {
         log(err);
     }
     registerCommandHandlers();
@@ -92,6 +122,9 @@ UiStatus buildStatus() {
     if (g_session.role() == Role::Host) s.role = "Host (captain)";
     if (g_session.role() == Role::Guest) s.role = "Guest (first officer)";
     if (s.connected) s.controls = s.iAmFlying ? "You are flying" : "Other pilot is flying";
+    if (s.connected && g_session.fixedRoles())
+        s.controls = s.iAmFlying ? "Both fly, your PC computes the aircraft" : "Both fly, other PC computes the aircraft";
+    s.canTakeControls = s.connected && !s.iAmFlying && !g_session.fixedRoles();
 
     s.profile = g_profile.title;
     int missing = g_profile.unresolvedCount();
@@ -208,6 +241,8 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
     XPLMRegisterCommandHandler(g_cmdWindow, commandHandler, 1, nullptr);
     XPLMRegisterCommandHandler(g_cmdTake, commandHandler, 1, nullptr);
 
+    registerScpDatarefs();
+
     XPLMCreateFlightLoop_t loop{};
     loop.structSize = sizeof(loop);
     loop.phase = xplm_FlightLoop_Phase_BeforeFlightModel;
@@ -224,6 +259,8 @@ PLUGIN_API void XPluginStop() {
     XPLMUnregisterCommandHandler(g_cmdWindow, commandHandler, 1, nullptr);
     XPLMUnregisterCommandHandler(g_cmdTake, commandHandler, 1, nullptr);
     if (g_loop) XPLMDestroyFlightLoop(g_loop);
+    for (XPLMDataRef r : g_scpRefs) XPLMUnregisterDataAccessor(r);
+    g_scpRefs.clear();
     uiDestroy();
     if (g_menu) XPLMDestroyMenu(g_menu);
     netShutdown();

@@ -465,6 +465,10 @@ bool Session::iAmFlying() const {
 
 void Session::takeControls() {
     if (phase_ != Phase::Connected || iAmFlying()) return;
+    if (profile_.fixedRoles) {
+        status_ = "In this aircraft both pilots fly at the same time";
+        return;
+    }
     if (role_ == Role::Host) {
         setHostIsMaster(true);
         sendReliable(RelKind::ControlState, {1});
@@ -513,9 +517,12 @@ void Session::update() {
     }
     resendReliable(t);
 
+    // MCDU keys and other short-lived values: every frame, reliably.
+    scanLocalChanges(true);
+    sendPriorityChanges();
     if (t - lastScan_ >= kScanInterval) {
         lastScan_ = t;
-        scanLocalChanges();
+        scanLocalChanges(false);
         sendDrefs(true);
     }
     if (t - lastSnapshot_ >= kSnapshotInterval) {
@@ -531,6 +538,10 @@ void Session::update() {
         }
     } else {
         applyRemoteState(t);
+        if (t - lastState_ >= kStateInterval) {
+            lastState_ = t;
+            sendBack();
+        }
     }
 }
 
@@ -664,6 +675,9 @@ void Session::handlePacket(const Endpoint& from, const uint8_t* data, size_t len
         case Msg::State:
             if (phase_ == Phase::Connected) receiveState(r, t);
             break;
+        case Msg::Back:
+            if (phase_ == Phase::Connected && iAmFlying()) applyBack(r);
+            break;
         case Msg::Drefs:
             if (phase_ == Phase::Connected) applyDrefs(r);
             break;
@@ -715,6 +729,7 @@ void Session::sendHello() {
     w.put<uint32_t>(profile_.hash);
     w.str(SHAREDCREW_VERSION);
     w.put<uint64_t>(token_);
+    w.str(acfRelPath_);  // only used by the test peer to find the aircraft's files
     for (const auto& c : candidates_) sendGame(c, w.buf);
 }
 
@@ -787,8 +802,11 @@ void Session::handleReliable(RelKind kind, Reader& r) {
             }
             break;
         }
+        case RelKind::Drefs:
+            applyDrefs(r);
+            break;
         case RelKind::TakeControl:
-            if (role_ == Role::Host) {
+            if (role_ == Role::Host && !profile_.fixedRoles) {
                 setHostIsMaster(false);
                 sendReliable(RelKind::ControlState, {0});
             }
@@ -824,11 +842,11 @@ void Session::onLocalCommand(int index, int phase) {
 // ---------------------------------------------------------------------------
 // Switches and knobs (two-way, last change wins)
 
-void Session::scanLocalChanges() {
+void Session::scanLocalChanges(bool priority) {
     const uint8_t me = role_ == Role::Host ? 0 : 1;
     std::vector<double> cur;
     for (auto& d : profile_.drefs) {
-        if (d.kind != EntryKind::Sync || !d.resolved()) continue;
+        if (d.priority != priority || !sendsChanges(d) || !d.resolved()) continue;
         d.read(cur);
         if (differs(cur, d.lastKnown)) {
             d.lastKnown = cur;
@@ -859,14 +877,44 @@ void Session::sendDrefs(bool onlyDirty) {
     startPacket();
     for (size_t i = 0; i < profile_.drefs.size(); ++i) {
         auto& d = profile_.drefs[i];
-        if (d.kind != EntryKind::Sync || !d.resolved()) continue;
-        if (onlyDirty && !d.dirty) continue;
+        if (!sendsChanges(d) || !d.resolved()) continue;
+        if (onlyDirty && (!d.dirty || d.priority)) continue;  // priority changes go reliably
         d.dirty = false;
         size_t need = 2 + 4 + 1 + 1 + d.lastKnown.size() * 8;
         if (w.size() + need > kMaxPacket) {
             flush();
             startPacket();
         }
+        w.put<uint16_t>(static_cast<uint16_t>(i));
+        w.put<uint32_t>(d.version);
+        w.put<uint8_t>(d.origin);
+        w.put<uint8_t>(static_cast<uint8_t>(d.lastKnown.size()));
+        for (double v : d.lastKnown) w.put<double>(v);
+        ++count;
+    }
+    flush();
+}
+
+void Session::sendPriorityChanges() {
+    // Same layout as a Drefs packet, but as ordered, acknowledged messages.
+    Writer w;
+    uint16_t count = 0;
+    auto flush = [&]() {
+        if (count == 0) return;
+        std::vector<uint8_t> payload;
+        payload.resize(2);
+        std::memcpy(payload.data(), &count, 2);
+        payload.insert(payload.end(), w.buf.begin(), w.buf.end());
+        sendReliable(RelKind::Drefs, payload);
+        w = Writer{};
+        count = 0;
+    };
+    for (size_t i = 0; i < profile_.drefs.size(); ++i) {
+        auto& d = profile_.drefs[i];
+        if (!d.priority || !d.dirty) continue;
+        d.dirty = false;
+        size_t need = 2 + 4 + 1 + 1 + d.lastKnown.size() * 8;
+        if (w.size() + need > kMaxPacket - 40) flush();
         w.put<uint16_t>(static_cast<uint16_t>(i));
         w.put<uint32_t>(d.version);
         w.put<uint8_t>(d.origin);
@@ -890,7 +938,7 @@ void Session::applyDrefs(Reader& r) {
         if (!r.good()) return;
         if (idx >= profile_.drefs.size()) continue;
         auto& d = profile_.drefs[idx];
-        if (d.kind != EntryKind::Sync || !d.resolved() || static_cast<int>(cnt) != d.count) continue;
+        if (!acceptsChanges(d) || !d.resolved() || static_cast<int>(cnt) != d.count) continue;
 
         bool newer = ver > d.version || (ver == d.version && origin > d.origin);
         if (!newer) continue;
@@ -1033,7 +1081,60 @@ bool Session::sample(double t, Snap& out) const {
 void Session::setOverrides(bool on) {
     if (on == overridesOn_ || !g_pos.ok) return;
     overridesOn_ = on;
-    if (g_pos.overrideJoystick) XPLMSetDatai(g_pos.overrideJoystick, on ? 1 : 0);
+    // With fixed roles each pilot keeps their own stick (the aircraft combines them), so
+    // only the profile's own overrides are used.
+    if (g_pos.overrideJoystick && !profile_.fixedRoles) XPLMSetDatai(g_pos.overrideJoystick, on ? 1 : 0);
+    std::vector<double> v;
+    for (auto& d : profile_.drefs) {
+        if (d.kind != EntryKind::Override || !d.resolved()) continue;
+        v.assign(d.count, on ? 1.0 : 0.0);
+        d.write(v);
+    }
+}
+
+bool Session::sendsChanges(const DrefEntry& d) const {
+    return d.kind == EntryKind::Sync || (d.kind == EntryKind::MasterSync && iAmFlying());
+}
+
+bool Session::acceptsChanges(const DrefEntry& d) const {
+    return d.kind == EntryKind::Sync || (d.kind == EntryKind::MasterSync && !iAmFlying());
+}
+
+void Session::sendBack() {
+    uint16_t n = 0;
+    for (const auto& d : profile_.drefs)
+        if (d.kind == EntryKind::Back) ++n;
+    if (n == 0) return;
+    Writer w;
+    w.header(Msg::Back);
+    w.put<uint16_t>(n);
+    std::vector<double> vals;
+    for (const auto& d : profile_.drefs) {
+        if (d.kind != EntryKind::Back) continue;
+        if (!d.resolved()) {
+            w.put<uint8_t>(0);
+            continue;
+        }
+        d.read(vals);
+        w.put<uint8_t>(static_cast<uint8_t>(vals.size()));
+        for (double v : vals) w.put<float>(static_cast<float>(v));
+    }
+    send(w);
+}
+
+void Session::applyBack(Reader& r) {
+    uint16_t n = r.get<uint16_t>();
+    size_t k = 0;
+    std::vector<double> vals;
+    for (auto& d : profile_.drefs) {
+        if (d.kind != EntryKind::Back) continue;
+        if (k++ >= n) break;
+        uint8_t cnt = r.get<uint8_t>();
+        vals.resize(cnt);
+        for (auto& v : vals) v = r.get<float>();
+        if (!r.good()) return;
+        if (d.resolved() && d.writable && static_cast<int>(cnt) == d.count) d.write(vals);
+    }
 }
 
 void Session::applyRemoteState(double t) {

@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.20)
-project(SharedCrew VERSION 0.2.0 LANGUAGES CXX)
+project(SharedCrew VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,7 @@ add_library(SharedCrew SHARED
     src/log.cpp
     src/net.cpp
     src/profile.cpp
+    src/profile_files.cpp
     src/session.cpp
     src/settings.cpp
     src/ui.cpp
@@ -76,7 +77,7 @@ endforeach()
 
 # Test peer: a fake second pilot for testing on one PC (Windows console app).
 if(WIN32)
-    add_executable(sc-testpeer tools/testpeer/main.cpp src/net.cpp src/nat.cpp src/code.cpp)
+    add_executable(sc-testpeer tools/testpeer/main.cpp src/net.cpp src/nat.cpp src/code.cpp src/profile_files.cpp)
     target_compile_definitions(sc-testpeer PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(sc-testpeer PRIVATE /W3 /utf-8)
     target_link_libraries(sc-testpeer PRIVATE ws2_32)

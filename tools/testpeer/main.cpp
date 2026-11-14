@@ -18,6 +18,7 @@
 
 #include "../../src/code.h"
 #include "../../src/nat.h"
+#include "../../src/profile_files.h"
 #include "../../src/net.h"
 #include "../../src/protocol.h"
 
@@ -45,74 +46,37 @@ std::string trim(const std::string& s) {
     return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
 }
 
-// Same rules as the plugin: default.txt first, then the matching aircraft file, no duplicates.
+// Same rules as the plugin (shared code in profile_files.cpp).
 struct Names {
-    std::vector<std::string> drefs;  // index -> name (sync and stream mixed, like the plugin)
+    std::vector<std::string> drefs;  // index -> "kind name", like the plugin's order
     std::vector<std::string> commands;
+    bool fixedRoles = false;
 };
 
-struct Parsed {
-    std::vector<std::string> matches;
-    bool noDefault = false;
-    std::vector<std::pair<std::string, std::string>> lines;
-};
-
-Parsed parse(const fs::path& p) {
-    Parsed out;
-    std::ifstream in(p);
-    std::string raw;
-    while (std::getline(in, raw)) {
-        size_t h = raw.find('#');
-        if (h != std::string::npos) raw = raw.substr(0, h);
-        std::string line = trim(raw);
-        if (line.empty()) continue;
-        std::istringstream ss(line);
-        std::string key, arg;
-        ss >> key;
-        std::getline(ss, arg);
-        key = lower(key);
-        arg = trim(arg);
-        if (key == "match") out.matches.push_back(lower(arg));
-        else if (key == "nodefault") out.noDefault = true;
-        else if (key == "sync" || key == "stream" || key == "command") out.lines.emplace_back(key, arg);
-    }
-    return out;
-}
-
-Names loadNames(const fs::path& dir, const std::string& acf) {
+Names loadNames(const fs::path& dir, const std::string& acf, const std::string& acfPath) {
     Names n;
-    std::vector<fs::path> files;
-    if (fs::is_directory(dir))
-        for (auto& e : fs::directory_iterator(dir))
-            if (e.is_regular_file() && lower(e.path().extension().string()) == ".txt" &&
-                lower(e.path().filename().string()) != "default.txt")
-                files.push_back(e.path());
-    std::sort(files.begin(), files.end());
-    Parsed aircraft;
-    bool found = false;
-    for (auto& f : files) {
-        Parsed p = parse(f);
-        for (auto& m : p.matches)
-            if (lower(acf).find(m) != std::string::npos) found = true;
-        if (found) {
-            aircraft = p;
-            printf("  profile: %s\n", f.filename().string().c_str());
-            break;
-        }
+    ProfileSpec spec;
+    std::string err;
+    if (!readProfileSpec(dir.u8string(), acf, acfPath, spec, err,
+                         [](const std::string& s) { printf("  %s\n", s.c_str()); })) {
+        printf("  %s\n", err.c_str());
+        return n;
     }
-    std::set<std::string> seen;
-    auto add = [&](const Parsed& p) {
-        for (auto& [k, a] : p.lines) {
-            if (!seen.insert(k + " " + a).second) continue;
-            if (k == "command") n.commands.push_back(a);
-            else n.drefs.push_back(k + " " + a);
-        }
-    };
-    if (!(found && aircraft.noDefault)) add(parse(dir / "default.txt"));
-    if (found) add(aircraft);
+    printf("  profile: %s%s\n", spec.title.c_str(), spec.fixedRoles ? " (both pilots fly, X-Plane computes)" : "");
+    for (auto& [k, a] : spec.entries) {
+        if (k == "command")
+            n.commands.push_back(a);
+        else
+            n.drefs.push_back(k + " " + a);
+    }
+    n.fixedRoles = spec.fixedRoles;
     return n;
 }
 
+std::string shortName(const std::string& entry) {
+    size_t sp = entry.find(' ');
+    return sp == std::string::npos ? entry : entry.substr(sp + 1);
+}
 int indexOf(const std::vector<std::string>& v, const std::string& name) {
     for (size_t i = 0; i < v.size(); ++i)
         if (v[i] == name) return static_cast<int>(i);
@@ -137,10 +101,12 @@ int main(int argc, char** argv) {
     }
     std::string serverAddr;
     bool relayOnly = false;
+    fs::path xplaneDir = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\X-Plane 12";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--server") serverAddr = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[i + 1] : kDefaultServer;
         if (a == "--relay-only") relayOnly = true;
+        if (a == "--xplane" && i + 1 < argc) xplaneDir = fs::u8path(argv[i + 1]);
     }
     if (relayOnly && serverAddr.empty()) serverAddr = kDefaultServer;
 
@@ -156,6 +122,19 @@ int main(int argc, char** argv) {
         printf("Press a key to close.\n");
         _getch();
         return 1;
+    }
+
+    // --profile-check <path inside Aircraft>: show which profile an aircraft gets, then quit.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) != "--profile-check") continue;
+        fs::path acfPath = xplaneDir / "Aircraft" / fs::u8path(argv[i + 1]);
+        Names nm = loadNames(profiles, acfPath.filename().u8string(), acfPath.u8string());
+        std::map<std::string, int> kinds;
+        for (auto& e : nm.drefs) kinds[e.substr(0, e.find(' '))]++;
+        for (auto& [k, v] : kinds) printf("  %-8s %d\n", k.c_str(), v);
+        printf("  %-8s %zu\n", "command", nm.commands.size());
+        sock.close();
+        return 0;
     }
 
     // --nat-check: test the router/internet part on its own, then quit.
@@ -348,6 +327,11 @@ int main(int argc, char** argv) {
             if (type == Msg::Hello) {
                 if (relayOnly && from != server) continue;
                 std::string acf = r.str();
+                r.get<uint32_t>();  // profile hash
+                r.str();            // version
+                if (r.remaining() >= 8) r.get<uint64_t>();
+                std::string rel = r.remaining() >= 2 ? r.str() : std::string();
+                std::string acfPath = rel.empty() ? std::string() : (xplaneDir / "Aircraft" / fs::u8path(rel)).u8string();
                 if (!connected) {
                     peer = from;
                     connected = true;
@@ -356,7 +340,7 @@ int main(int argc, char** argv) {
                     outQueue.clear();
                     outId = inId = 1;
                     printf("X-Plane connected from %s, aircraft %s\n", from.str().c_str(), acf.c_str());
-                    names = loadNames(profiles, acf);
+                    names = loadNames(profiles, acf, acfPath);
                     printf("  %zu datarefs, %zu commands in profile\n", names.drefs.size(), names.commands.size());
                     printHelp();
                 }
@@ -420,7 +404,7 @@ int main(int argc, char** argv) {
                         d.origin = o;
                         d.vals = vals;
                         if (changed) {
-                            std::string nm = idx < names.drefs.size() ? names.drefs[idx].substr(5) : "#" + std::to_string(idx);
+                            std::string nm = idx < names.drefs.size() ? shortName(names.drefs[idx]) : "#" + std::to_string(idx);
                             printf("  <- X-Plane changed %s =", nm.c_str());
                             for (size_t i = 0; i < vals.size() && i < 4; ++i) printf(" %g", vals[i]);
                             printf(vals.size() > 4 ? " ...\n" : "\n");
@@ -535,7 +519,9 @@ int main(int argc, char** argv) {
             if (c == 'Q') running = false;
             if (!connected) continue;
             if (c == 'T') {
-                if (!havePos) {
+                if (names.fixedRoles) {
+                    printf("  this aircraft has fixed roles: X-Plane always computes it, so T is not used\n");
+                } else if (!havePos) {
                     printf("  no position from X-Plane yet\n");
                 } else if (!iFly) {
                     iFly = true;
@@ -552,8 +538,17 @@ int main(int argc, char** argv) {
                 printf("  -> controls given back to X-Plane\n");
             }
             if (c == 'L' || c == 'B') {
+                // The standard switch, or the first two-way value with "landing"/"beacon" in its name.
                 std::string nm = c == 'L' ? "sim/cockpit2/switches/landing_lights_on"
                                           : "sim/cockpit2/switches/beacon_on";
+                if (indexOf(names.drefs, "sync " + nm) < 0) {
+                    const char* word = c == 'L' ? "land" : "beacon";
+                    for (auto& e : names.drefs)
+                        if (e.rfind("sync ", 0) == 0 && lower(e).find(word) != std::string::npos) {
+                            nm = shortName(e);
+                            break;
+                        }
+                }
                 int idx = indexOf(names.drefs, "sync " + nm);
                 double cur = idx >= 0 && drefs.count(idx) && !drefs[idx].vals.empty() ? drefs[idx].vals[0] : 0;
                 setDref(nm, cur > 0.5 ? 0.0 : 1.0);

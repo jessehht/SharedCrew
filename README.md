@@ -4,7 +4,7 @@ Free shared cockpit for X-Plane 12. Two pilots on two PCs fly one aircraft toget
 one is the host, the other joins. Switches, knobs, radios and autopilot buttons stay in sync
 both ways, and the controls can be handed over in flight.
 
-Status: early development (0.2). Tested on one PC with the test peer; not yet tested between two homes.
+Status: early development (0.3). Tested on one PC with the test peer; not yet tested between two homes.
 
 ## How it works
 
@@ -47,6 +47,20 @@ sudo ufw allow 51010/udp
 python3 server/test_server.py 127.0.0.1 51010
 ```
 
+## Aircraft
+
+- **Standard X-Plane aircraft** (Cessna 172 and others): `profiles/default.txt`. The pilot flying
+  sends position and controls; **Take controls** hands the aircraft over.
+- **Aircraft with a SmartCopilot config** (all ToLiss Airbuses and many others): SharedCrew reads the
+  `smartcopilot.cfg` in the aircraft folder (it is never copied). The host's PC computes the aircraft and
+  both pilots fly at the same time, like a real Airbus with two sidesticks. SharedCrew provides
+  `scp/api/ismaster`, so the aircraft switches on its own shared-cockpit logic.
+  - ToLiss: each pilot uses their own MCDU (captain left, first officer right), so both can have a
+    different page open while the FMS data (route, performance, V-speeds) is shared.
+    Use the 3D MCDU in the cockpit, not the 2D pop-up.
+  - MCDU key presses and other short-lived values are checked every frame and delivered in order.
+- Both pilots can always use every switch and button, whoever is flying.
+
 ## Building (Windows)
 
 Needs Visual Studio 2022 Build Tools (C++) and CMake.
@@ -69,7 +83,12 @@ nodefault                  # optional: don't include default.txt
 sync  some/dataref         # two-way
 sync  some/array[2]        # one element of an array
 stream some/dataref        # from the pilot flying, every frame
+master some/dataref        # from the pilot flying, only when it changes
+back  some/dataref         # from the other pilot to the pilot flying, every frame
+override some/dataref      # set to 1 on the other pilot's PC while connected
 command some/command       # mirror button presses
+fixedroles                 # host always computes the aircraft, both pilots fly together
+import smartcopilot        # also use the aircraft's smartcopilot.cfg
 ```
 
 Use DataRefTool to find an aircraft's datarefs and commands.

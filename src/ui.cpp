@@ -1,4 +1,4 @@
-#include "ui.h"
+﻿#include "ui.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -222,7 +222,7 @@ void uiUpdate(const UiStatus& s) {
     enable(g_btnPaste, editable);
     enable(g_portField, !s.busy);
     enable(g_btnStop, s.busy);
-    enable(g_btnTake, s.connected && !s.iAmFlying);
+    enable(g_btnTake, s.canTakeControls);
 
     // Short instructions for the current step
     std::string h1, h2;

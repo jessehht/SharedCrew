@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <functional>
 #include <string>
 
@@ -24,6 +24,7 @@ struct UiStatus {
     bool connected = false;
     bool busy = false;      // hosting/connecting/connected
     bool iAmFlying = true;
+    bool canTakeControls = false;
 };
 
 void uiInit(const UiActions& actions, const std::string& host, int port);

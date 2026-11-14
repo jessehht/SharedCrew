@@ -39,12 +39,14 @@ enum class Msg : uint8_t {
     Ack = 9,
     Bye = 10,
     Punch = 11,    // host -> guest: opens a path through the host's router
+    Back = 12,     // other pilot -> pilot flying: stick, tiller... (profile "back" entries)
 };
 
 enum class RelKind : uint8_t {
     Command = 1,       // u16 command index, u8 phase
     TakeControl = 2,   // guest asks host for controls
     ControlState = 3,  // host -> guest: u8 hostIsMaster
+    Drefs = 4,         // priority values, same layout as Msg::Drefs
 };
 
 class Writer {

@@ -20,7 +20,11 @@ class Session {
 public:
     explicit Session(Profile& profile) : profile_(profile) {}
 
-    void setAircraft(const std::string& acfFile) { acfFile_ = acfFile; }
+    // acfRelPath: path inside X-Plane's Aircraft folder (never the full path: that shows your user name).
+    void setAircraft(const std::string& acfFile, const std::string& acfRelPath) {
+        acfFile_ = acfFile;
+        acfRelPath_ = acfRelPath;
+    }
     // SharedCrew server "host:port" for short codes and relay. Empty = off.
     void setServer(const std::string& address) { serverAddress_ = address; }
 
@@ -52,6 +56,8 @@ public:
     Phase phase() const { return phase_; }
     bool connected() const { return phase_ == Phase::Connected; }
     bool iAmFlying() const;
+    // Both pilots fly together and the controls can't be handed over (e.g. ToLiss Airbus).
+    bool fixedRoles() const { return profile_.fixedRoles; }
     double pingMs() const { return rtt_ * 1000.0; }
     const std::string& status() const { return status_; }
     std::string peerText() const { return peer_.valid() ? peer_.str() : std::string(); }
@@ -80,9 +86,15 @@ private:
     void sendReliable(RelKind kind, const std::vector<uint8_t>& payload);
     void resendReliable(double now);
 
-    void scanLocalChanges();
+    void scanLocalChanges(bool priority);
+    void sendPriorityChanges();
     void sendDrefs(bool onlyDirty);
     void applyDrefs(Reader& r);
+
+    bool sendsChanges(const DrefEntry& d) const;
+    bool acceptsChanges(const DrefEntry& d) const;
+    void sendBack();
+    void applyBack(Reader& r);
 
     void sendState(double now);
     void receiveState(Reader& r, double now);
@@ -100,6 +112,7 @@ private:
 
     Profile& profile_;
     std::string acfFile_;
+    std::string acfRelPath_;
     UdpSocket sock_;
     Endpoint peer_;
     Role role_ = Role::None;
