@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Aircraft profiles: text files that list what to keep in sync for an aircraft.
 #include <cstdint>
 #include <string>
@@ -24,6 +24,9 @@ struct DrefEntry {
     // Short-lived values (MCDU key presses, aircraft sync channels): checked every frame
     // and delivered reliably and in order, so no key press is ever lost.
     bool priority = false;
+    // Receiver ignores changes smaller than this (0 = off). Used for clocks.
+    double applyTolerance = 0;
+    bool failed = false;  // exists but can't be used (wrong type): don't try again
 
     XPLMDataRef ref = nullptr;
     XPLMDataTypeID type = 0;

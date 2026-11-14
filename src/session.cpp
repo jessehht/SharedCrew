@@ -541,10 +541,14 @@ void Session::update() {
     // Every change goes reliably and in order with button presses, so a pressed command
     // (e.g. gear toggle) and the switch it moves always arrive in the same order on both PCs.
     // MCDU keys and other short-lived values are checked every frame, the rest 20x per second.
-    scanLocalChanges(true);
+    scanLocalChanges(0);
     if (t - lastScan_ >= kScanInterval) {
         lastScan_ = t;
-        scanLocalChanges(false);
+        scanLocalChanges(1);
+    }
+    if (t - lastSlowScan_ >= 1.0) {
+        lastSlowScan_ = t;
+        scanLocalChanges(2);
     }
     sendChangesReliably();
     if (t - lastSnapshot_ >= kSnapshotInterval) {
@@ -874,11 +878,13 @@ void Session::onLocalCommand(int index, int phase) {
 // ---------------------------------------------------------------------------
 // Switches and knobs (two-way, last change wins)
 
-void Session::scanLocalChanges(bool priority) {
+void Session::scanLocalChanges(int group) {
     const uint8_t me = role_ == Role::Host ? 0 : 1;
     std::vector<double> cur;
     for (auto& d : profile_.drefs) {
-        if (d.priority != priority || !sendsChanges(d) || !d.resolved()) continue;
+        // 0 = every frame (MCDU keys), 1 = 20x per second (switches), 2 = once a second (time, loading)
+        const int g = d.priority ? 0 : (d.kind == EntryKind::MasterSync ? 2 : 1);
+        if (g != group || !sendsChanges(d) || !d.resolved()) continue;
         d.read(cur);
         if (differs(cur, d.lastKnown)) {
             d.lastKnown = cur;
@@ -984,7 +990,14 @@ void Session::applyDrefs(Reader& r) {
             }
             continue;
         }
-        if (differs(vals, d.lastKnown)) {
+        // Small differences in clocks are not worth a jump (rewriting the time can make the sim stutter).
+        std::vector<double> current;
+        d.read(current);
+        const bool smallTimeDrift =
+            d.applyTolerance > 0 && d.count == 1 && std::fabs(vals[0] - current[0]) < d.applyTolerance;
+        if (smallTimeDrift) {
+            d.lastKnown = current;
+        } else if (differs(vals, current)) {
             d.write(vals);
             d.read(d.lastKnown);  // what the aircraft actually accepted
         }

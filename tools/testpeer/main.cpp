@@ -303,7 +303,9 @@ int main(int argc, char** argv) {
             d.version = v;
             d.origin = o;
             d.vals = vals;
-            if (changed) {
+            // Only two-way switches/knobs are shown (time, loading... would flood the window).
+            const bool isSwitch = idx < names.drefs.size() && names.drefs[idx].rfind("sync ", 0) == 0;
+            if (changed && isSwitch) {
                 std::string nm = idx < names.drefs.size() ? shortName(names.drefs[idx]) : "#" + std::to_string(idx);
                 printf("  <- X-Plane changed %s =", nm.c_str());
                 for (size_t i = 0; i < vals.size() && i < 4; ++i) printf(" %g", vals[i]);

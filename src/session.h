@@ -88,7 +88,7 @@ private:
     void sendReliable(RelKind kind, const std::vector<uint8_t>& payload);
     void resendReliable(double now);
 
-    void scanLocalChanges(bool priority);
+    void scanLocalChanges(int group);
     void sendChangesReliably();
     void sendDrefs(bool onlyDirty);
     void applyDrefs(Reader& r);
@@ -128,6 +128,7 @@ private:
     double lastPing_ = 0;
     double lastState_ = 0;
     double lastScan_ = 0;
+    double lastSlowScan_ = 0;
     double lastSnapshot_ = 0;
     double rtt_ = 0;
 

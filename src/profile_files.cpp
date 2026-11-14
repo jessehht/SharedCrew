@@ -80,8 +80,10 @@ bool parseSmartCopilot(const fs::path& path, ParsedFile& out) {
             key = "stream";
         else if (section == "SEND_BACK")
             key = "back";
-        else if (section == "SLOW" || section == "WEATHER")
+        else if (section == "SLOW")
             key = "master";
+        // [WEATHER] is skipped: those are X-Plane 11 weather values. In X-Plane 12 both pilots use
+        // real weather, and rewriting the weather every few seconds makes the sim stutter.
         else if (section == "COMMANDS")
             key = "command";
         else if (section == "OVERRIDE")

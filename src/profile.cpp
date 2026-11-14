@@ -29,6 +29,7 @@ std::string trim(const std::string& s) {
 
 bool DrefEntry::resolve() {
     if (resolved()) return true;
+    if (failed) return false;
     ref = XPLMFindDataRef(name.c_str());
     if (!ref) return false;
     type = XPLMGetDataRefTypes(ref);
@@ -46,6 +47,7 @@ bool DrefEntry::resolve() {
         if (!isFloatArray && !isIntArray) {
             log("\"" + label() + "\" is not an array, ignoring it");
             ref = nullptr;
+            failed = true;
             return false;
         }
         count = 1;
@@ -58,6 +60,7 @@ bool DrefEntry::resolve() {
     } else {
         log("\"" + name + "\" has a type SharedCrew can't sync yet, ignoring it");
         ref = nullptr;
+        failed = true;
         return false;
     }
     if (count <= 0) {
@@ -159,7 +162,7 @@ int Profile::unresolvedCount() const {
 
 void Profile::resolvePending(bool logMissing) {
     for (auto& d : drefs) {
-        if (!d.resolved() && !d.resolve() && logMissing) log("dataref not found: " + d.label());
+        if (!d.resolved() && !d.resolve() && logMissing && !d.failed) log("dataref not found: " + d.label());
     }
     for (auto& c : commands) {
         if (!c.ref) {
@@ -204,6 +207,7 @@ bool loadProfile(const std::string& profilesDir, const std::string& acfFile, con
         }
         d.priority = d.kind == EntryKind::Sync &&
                      (d.name.find("smartCopilotSync/") != std::string::npos || d.name.find("MCDU") != std::string::npos);
+        if (d.name.rfind("sim/time/", 0) == 0) d.applyTolerance = 2.0;
         out.drefs.push_back(d);
     }
     out.resolvePending(false);
