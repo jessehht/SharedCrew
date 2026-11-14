@@ -27,6 +27,7 @@ constexpr int kWidth = 300;
 constexpr int kPad = 14;
 constexpr int kBtnH = 26;
 constexpr int kFieldH = 26;
+constexpr int kMinHeight = 140;
 
 // Colors (RGB)
 float kText[3] = {0.90f, 0.91f, 0.92f};
@@ -349,13 +350,20 @@ int drawContent(int L, int T, int R) {
 
 // ---------------------------------------------------------------- callbacks
 
+int g_requestedHeight = 0;
+
 void drawWindow(XPLMWindowID win, void*) {
     XPLMSetGraphicsState(0, 0, 0, 0, 1, 0, 0);
     int l, t, r, b;
     XPLMGetWindowGeometry(win, &l, &t, &r, &b);
-    const int used = drawContent(l, t, r);
-    // Fit the window to its content (keeps the top edge where it is).
-    if (!XPLMWindowIsPoppedOut(win) && std::abs((t - b) - used) > 1) XPLMSetWindowGeometry(win, l, t, r, t - used);
+    int used = drawContent(l, t, r);
+    if (used < kMinHeight) used = kMinHeight;
+    // Fit the window to its content, keeping the top edge where it is. Only when the content
+    // height changes: chasing X-Plane's own size adjustments every frame makes the window drift.
+    if (!XPLMWindowIsPoppedOut(win) && used != g_requestedHeight) {
+        g_requestedHeight = used;
+        XPLMSetWindowGeometry(win, l, t, r, t - used);
+    }
 }
 
 void activateField(int id) {
@@ -493,7 +501,7 @@ void create() {
     p.layer = xplm_WindowLayerFloatingWindows;
     g_window = XPLMCreateWindowEx(&p);
     XPLMSetWindowTitle(g_window, "SharedCrew");
-    XPLMSetWindowResizingLimits(g_window, kWidth, 120, kWidth + 200, 600);
+    XPLMSetWindowResizingLimits(g_window, kWidth, kMinHeight, kWidth + 200, 700);
     XPLMSetWindowPositioningMode(g_window, xplm_WindowPositionFree, -1);
 }
 
@@ -514,6 +522,17 @@ void uiInit(const UiActions& actions, const std::string& lastCode, int port) {
 
 void uiShow() {
     if (!g_window) create();
+    // Put it back on screen if it ended up (partly) outside it.
+    if (!XPLMWindowIsPoppedOut(g_window)) {
+        int sl, st, sr, sb, l, t, r, b;
+        XPLMGetScreenBoundsGlobal(&sl, &st, &sr, &sb);
+        XPLMGetWindowGeometry(g_window, &l, &t, &r, &b);
+        if (t > st || b < sb || l < sl || r > sr) {
+            const int h = t - b;
+            XPLMSetWindowGeometry(g_window, sl + 80, st - 140, sl + 80 + (r - l), st - 140 - h);
+        }
+    }
+    g_requestedHeight = 0;
     XPLMSetWindowIsVisible(g_window, 1);
     XPLMBringWindowToFront(g_window);
 }
