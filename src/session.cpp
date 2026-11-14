@@ -425,6 +425,8 @@ void Session::stop(const std::string& reason, bool notifyPeer) {
         sendServer(Srv::Unregister, w);
     }
     setOverrides(false);
+    setRudderOverride(false);
+    havePose_ = false;
     sock_.close();
     nat_.stop();
     server_ = Endpoint{};
@@ -558,11 +560,14 @@ void Session::update() {
 
     if (iAmFlying()) {
         setOverrides(false);
+        havePose_ = false;
+        setRudderOverride(profile_.fixedRoles && !iHaveControl());
         if (t - lastState_ >= kStateInterval) {
             lastState_ = t;
             sendState(t);
         }
     } else {
+        setRudderOverride(false);
         applyRemoteState(t);
         // Thrust, tiller, rudder... only from the pilot who has the controls.
         if (iHaveControl() && t - lastState_ >= kStateInterval) {
@@ -1234,27 +1239,27 @@ void Session::applyRemoteState(double t) {
     double dt = s.t - s0.t;
     if (dt <= 1e-4) dt = 0.05;
 
-    XPLMSetDatad(g_pos.localX, x);
-    XPLMSetDatad(g_pos.localY, y);
-    XPLMSetDatad(g_pos.localZ, z);
-    XPLMSetDataf(g_pos.vx, static_cast<float>((x - x0) / dt));
-    XPLMSetDataf(g_pos.vy, static_cast<float>((y - y0) / dt));
-    XPLMSetDataf(g_pos.vz, static_cast<float>((z - z0) / dt));
-    XPLMSetDataf(g_pos.psi, s.psi);
-    XPLMSetDataf(g_pos.theta, s.theta);
-    XPLMSetDataf(g_pos.phi, s.phi);
-    XPLMSetDataf(g_pos.p, s.p);
-    XPLMSetDataf(g_pos.q, s.q);
-    XPLMSetDataf(g_pos.r, s.r);
+    poseLat_ = s.lat;
+    poseLon_ = s.lon;
+    poseElev_ = s.elev;
+    poseV_[0] = static_cast<float>((x - x0) / dt);
+    poseV_[1] = static_cast<float>((y - y0) / dt);
+    poseV_[2] = static_cast<float>((z - z0) / dt);
+    poseAtt_[0] = s.psi;
+    poseAtt_[1] = s.theta;
+    poseAtt_[2] = s.phi;
+    poseAtt_[3] = s.p;
+    poseAtt_[4] = s.q;
+    poseAtt_[5] = s.r;
 
     // Attitude quaternion (formula from the X-Plane SDK docs).
     const double hp = kPi / 360.0 * s.psi, ht = kPi / 360.0 * s.theta, hf = kPi / 360.0 * s.phi;
-    float quat[4];
-    quat[0] = static_cast<float>(std::cos(hp) * std::cos(ht) * std::cos(hf) + std::sin(hp) * std::sin(ht) * std::sin(hf));
-    quat[1] = static_cast<float>(std::cos(hp) * std::cos(ht) * std::sin(hf) - std::sin(hp) * std::sin(ht) * std::cos(hf));
-    quat[2] = static_cast<float>(std::cos(hp) * std::sin(ht) * std::cos(hf) + std::sin(hp) * std::cos(ht) * std::sin(hf));
-    quat[3] = static_cast<float>(-std::cos(hp) * std::sin(ht) * std::sin(hf) + std::sin(hp) * std::cos(ht) * std::cos(hf));
-    XPLMSetDatavf(g_pos.quat, quat, 0, 4);
+    poseQuat_[0] = static_cast<float>(std::cos(hp) * std::cos(ht) * std::cos(hf) + std::sin(hp) * std::sin(ht) * std::sin(hf));
+    poseQuat_[1] = static_cast<float>(std::cos(hp) * std::cos(ht) * std::sin(hf) - std::sin(hp) * std::sin(ht) * std::cos(hf));
+    poseQuat_[2] = static_cast<float>(std::cos(hp) * std::sin(ht) * std::cos(hf) + std::sin(hp) * std::cos(ht) * std::sin(hf));
+    poseQuat_[3] = static_cast<float>(-std::cos(hp) * std::sin(ht) * std::sin(hf) + std::sin(hp) * std::cos(ht) * std::cos(hf));
+    havePose_ = true;
+    writePose();
 
     // Controls, throttle, fuel... from the pilot flying.
     size_t k = 0;
@@ -1270,6 +1275,43 @@ void Session::applyRemoteState(double t) {
 
     // Drop old samples
     while (snaps_.size() > 2 && snaps_[1].t < renderT - 1.0) snaps_.pop_front();
+}
+
+void Session::writePose() {
+    // Stored as world position: X-Plane can move its local origin between two flight loops.
+    double x, y, z;
+    XPLMWorldToLocal(poseLat_, poseLon_, poseElev_, &x, &y, &z);
+    XPLMSetDatad(g_pos.localX, x);
+    XPLMSetDatad(g_pos.localY, y);
+    XPLMSetDatad(g_pos.localZ, z);
+    XPLMSetDataf(g_pos.vx, poseV_[0]);
+    XPLMSetDataf(g_pos.vy, poseV_[1]);
+    XPLMSetDataf(g_pos.vz, poseV_[2]);
+    XPLMSetDataf(g_pos.psi, poseAtt_[0]);
+    XPLMSetDataf(g_pos.theta, poseAtt_[1]);
+    XPLMSetDataf(g_pos.phi, poseAtt_[2]);
+    XPLMSetDataf(g_pos.p, poseAtt_[3]);
+    XPLMSetDataf(g_pos.q, poseAtt_[4]);
+    XPLMSetDataf(g_pos.r, poseAtt_[5]);
+    XPLMSetDatavf(g_pos.quat, poseQuat_, 0, 4);
+}
+
+void Session::afterFlightModel() {
+    // The flight model just moved the aircraft one step with this PC's own physics, which is
+    // never exactly what the other PC computed. Put it back so the picture doesn't shake.
+    if (phase_ != Phase::Connected || iAmFlying() || !havePose_ || !g_pos.ok) return;
+    writePose();
+}
+
+void Session::setRudderOverride(bool on) {
+    // Fixed roles: while the other pilot has the controls, their rudder comes in as
+    // sim/joystick/yoke_heading_ratio. Without this override X-Plane writes this PC's own
+    // pedals (or 0) over it every frame.
+    if (on == rudderOverride_) return;
+    static XPLMDataRef ref = XPLMFindDataRef("sim/operation/override/override_joystick_heading");
+    if (!ref) return;
+    rudderOverride_ = on;
+    XPLMSetDatai(ref, on ? 1 : 0);
 }
 
 }  // namespace sc

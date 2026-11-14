@@ -90,6 +90,20 @@ bool parseSmartCopilot(const fs::path& path, ParsedFile& out) {
             key = name.find("/override/") != std::string::npos ? "override" : "stream";
         if (!key.empty()) out.lines.emplace_back(key, name);
     }
+    // Aircraft with their own sync channel (ToLiss: smartCopilotSync/.../MCDU) already pass
+    // MCDU keys to the other PC themselves. Mirroring an MCDU key command as well makes it
+    // arrive twice (one CLR press cleared the message and a letter).
+    bool ownMcduSync = false;
+    for (const auto& [key, name] : out.lines)
+        if (name.find("smartCopilotSync/") != std::string::npos && name.find("/MCDU/") != std::string::npos)
+            ownMcduSync = true;
+    if (ownMcduSync) {
+        out.lines.erase(std::remove_if(out.lines.begin(), out.lines.end(),
+                                       [](const std::pair<std::string, std::string>& l) {
+                                           return l.first == "command" && l.second.find("MCDU") != std::string::npos;
+                                       }),
+                        out.lines.end());
+    }
     out.noDefault = true;
     out.fixedRoles = true;
     if (out.title.empty()) out.title = "SmartCopilot config";

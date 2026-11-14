@@ -27,6 +27,7 @@ Profile g_profile;
 Session g_session(g_profile);
 Settings g_settings;
 XPLMFlightLoopID g_loop = nullptr;
+XPLMFlightLoopID g_afterLoop = nullptr;  // after the flight model: holds the follower's position
 XPLMMenuID g_menu = nullptr;
 XPLMCommandRef g_cmdWindow = nullptr;
 XPLMCommandRef g_cmdTake = nullptr;
@@ -194,6 +195,11 @@ float flightLoop(float elapsed, float, int, void*) {
     return -1.0f;  // every frame
 }
 
+float afterFlightLoop(float, float, int, void*) {
+    g_session.afterFlightModel();
+    return -1.0f;
+}
+
 void onHost(int port) {
     g_settings.port = port;
     g_settings.save(settingsFile());
@@ -272,6 +278,9 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
     loop.phase = xplm_FlightLoop_Phase_BeforeFlightModel;
     loop.callbackFunc = flightLoop;
     g_loop = XPLMCreateFlightLoop(&loop);
+    loop.phase = xplm_FlightLoop_Phase_AfterFlightModel;
+    loop.callbackFunc = afterFlightLoop;
+    g_afterLoop = XPLMCreateFlightLoop(&loop);
 
     log("started, version " SHAREDCREW_VERSION ", folder " + g_pluginDir);
     return 1;
@@ -283,6 +292,7 @@ PLUGIN_API void XPluginStop() {
     XPLMUnregisterCommandHandler(g_cmdWindow, commandHandler, 1, nullptr);
     XPLMUnregisterCommandHandler(g_cmdTake, commandHandler, 1, nullptr);
     if (g_loop) XPLMDestroyFlightLoop(g_loop);
+    if (g_afterLoop) XPLMDestroyFlightLoop(g_afterLoop);
     for (XPLMDataRef r : g_scpRefs) XPLMUnregisterDataAccessor(r);
     g_scpRefs.clear();
     uiDestroy();
@@ -293,12 +303,14 @@ PLUGIN_API void XPluginStop() {
 PLUGIN_API int XPluginEnable() {
     reloadProfile();
     XPLMScheduleFlightLoop(g_loop, -1.0f, 1);
+    XPLMScheduleFlightLoop(g_afterLoop, -1.0f, 1);
     return 1;
 }
 
 PLUGIN_API void XPluginDisable() {
     g_session.stop("Plugin disabled");
     XPLMScheduleFlightLoop(g_loop, 0, 1);
+    XPLMScheduleFlightLoop(g_afterLoop, 0, 1);
 }
 
 PLUGIN_API void XPluginReceiveMessage(XPLMPluginID, int msg, void* param) {

@@ -43,6 +43,9 @@ public:
 
     // Call every frame, before the flight model runs.
     void update();
+    // Call every frame, after the flight model: puts the follower back on the received position,
+    // so what is drawn is the other PC's aircraft and not this PC's own physics.
+    void afterFlightModel();
 
     // Pilot flying hand-over.
     void takeControls();
@@ -103,6 +106,8 @@ private:
     bool sample(double t, Snap& out) const;
     void applyRemoteState(double now);
     void setOverrides(bool on);
+    void setRudderOverride(bool on);
+    void writePose();
     void setHostIsMaster(bool v);
     void setHostHasControl(bool v);
     void updateNat(double now);
@@ -137,6 +142,13 @@ private:
     bool hostHasControl_ = true;  // fixed roles: who has thrust/tiller/rudder
     bool overridesOn_ = false;
     bool placed_ = false;
+    bool rudderOverride_ = false;
+    // Follower: the position written before the flight model, written again after it.
+    bool havePose_ = false;
+    double poseLat_ = 0, poseLon_ = 0, poseElev_ = 0;
+    float poseV_[3] = {};
+    float poseAtt_[6] = {};  // psi, theta, phi, P, Q, R
+    float poseQuat_[4] = {};
 
     uint32_t nextOutId_ = 1;
     uint32_t nextInId_ = 1;
