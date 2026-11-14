@@ -283,10 +283,13 @@ int main(int argc, char** argv) {
         printf("  T  take the controls (test peer flies circles from your position)\n");
         printf("  G  give the controls back to X-Plane\n");
         printf("  L  landing lights on/off      B  beacon on/off\n");
+        printf("  U  undo: flip back the last switch you changed in X-Plane\n");
         printf("  A  press autopilot HDG button\n");
         printf("  Q  quit\n\n");
     };
 
+    int lastChangedIdx = -1;
+    std::vector<double> lastChangedOld;
     auto readDrefs = [&](Reader& r) {
         uint16_t cnt = r.get<uint16_t>();
         for (uint16_t k = 0; k < cnt && r.good(); ++k) {
@@ -300,12 +303,15 @@ int main(int argc, char** argv) {
             bool newer = v > d.version || (v == d.version && o > d.origin) || d.vals.empty();
             if (!newer) continue;
             bool changed = !d.vals.empty() && d.vals != vals;
+            std::vector<double> oldVals = d.vals;
             d.version = v;
             d.origin = o;
             d.vals = vals;
             // Only two-way switches/knobs are shown (time, loading... would flood the window).
             const bool isSwitch = idx < names.drefs.size() && names.drefs[idx].rfind("sync ", 0) == 0;
             if (changed && isSwitch) {
+                lastChangedIdx = idx;
+                lastChangedOld = oldVals;
                 std::string nm = idx < names.drefs.size() ? shortName(names.drefs[idx]) : "#" + std::to_string(idx);
                 printf("  <- X-Plane changed %s =", nm.c_str());
                 for (size_t i = 0; i < vals.size() && i < 4; ++i) printf(" %g", vals[i]);
@@ -567,6 +573,27 @@ int main(int argc, char** argv) {
                 int idx = indexOf(names.drefs, "sync " + nm);
                 double cur = idx >= 0 && drefs.count(idx) && !drefs[idx].vals.empty() ? drefs[idx].vals[0] : 0;
                 setDref(nm, cur > 0.5 ? 0.0 : 1.0);
+            }
+            if (c == 'U') {
+                if (lastChangedIdx < 0 || !drefs.count(lastChangedIdx)) {
+                    printf("  change a switch in X-Plane first\n");
+                } else {
+                    auto& d = drefs[lastChangedIdx];
+                    d.version++;
+                    d.origin = 0;
+                    d.vals = lastChangedOld;
+                    Writer w;
+                    w.header(Msg::Drefs);
+                    w.put<uint16_t>(1);
+                    w.put<uint16_t>(static_cast<uint16_t>(lastChangedIdx));
+                    w.put<uint32_t>(d.version);
+                    w.put<uint8_t>(d.origin);
+                    w.put<uint8_t>(static_cast<uint8_t>(d.vals.size()));
+                    for (double v : d.vals) w.put<double>(v);
+                    send(w);
+                    printf("  -> put %s back. It should flip back in your cockpit.\n", shortName(names.drefs[lastChangedIdx]).c_str());
+                    lastChangedIdx = -1;
+                }
             }
             if (c == 'A') pressCommand("sim/autopilot/heading");
         }
