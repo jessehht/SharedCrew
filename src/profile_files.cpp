@@ -43,7 +43,8 @@ struct ParsedFile {
 };
 
 bool isEntryKeyword(const std::string& k) {
-    return k == "sync" || k == "stream" || k == "master" || k == "back" || k == "override" || k == "command";
+    return k == "sync" || k == "stream" || k == "master" || k == "back" || k == "override" ||
+           k == "controloverride" || k == "command";
 }
 
 // Reads a SmartCopilot config (shipped with many aircraft) into SharedCrew entries.
@@ -86,8 +87,17 @@ bool parseSmartCopilot(const fs::path& path, ParsedFile& out) {
         // real weather, and rewriting the weather every few seconds makes the sim stutter.
         else if (section == "COMMANDS")
             key = "command";
-        else if (section == "OVERRIDE")
-            key = name.find("/override/") != std::string::npos ? "override" : "stream";
+        else if (section == "OVERRIDE") {
+            // Switches like override_joystick_heading or ToLiss' TillerInputOverride. The number
+            // says on which PC: 10 = the pilot without the controls (their pedals and tiller
+            // must not fight the other pilot's), otherwise the PC that follows.
+            if (lower(name).find("override") != std::string::npos) {
+                int mode = eq == std::string::npos ? 0 : std::atoi(trim(line.substr(eq + 1)).c_str());
+                key = mode == 10 ? "controloverride" : "override";
+            } else {
+                key = "stream";
+            }
+        }
         if (!key.empty()) out.lines.emplace_back(key, name);
     }
     // Aircraft with their own sync channel (ToLiss: smartCopilotSync/.../MCDU) already pass

@@ -86,6 +86,7 @@ stream some/dataref        # from the pilot flying, every frame
 master some/dataref        # from the pilot flying, only when it changes
 back  some/dataref         # from the other pilot to the pilot flying, every frame
 override some/dataref      # set to 1 on the other pilot's PC while connected
+controloverride some/dataref  # set to 1 on the PC of the pilot without the controls
 command some/command       # mirror button presses
 fixedroles                 # host always computes the aircraft, both pilots fly together
 import smartcopilot        # also use the aircraft's smartcopilot.cfg

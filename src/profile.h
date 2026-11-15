@@ -15,6 +15,7 @@ enum class EntryKind {
     MasterSync,  // one-way from the pilot flying, only when it changes (loading, weather)
     Back,        // one-way to the pilot flying, every frame (the other pilot's stick, tiller)
     Override,    // set to 1 on the other pilot's PC while connected
+    ControlOverride,  // set to 1 on the PC of the pilot who does not have the controls
 };
 
 struct DrefEntry {

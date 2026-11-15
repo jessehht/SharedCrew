@@ -425,7 +425,7 @@ void Session::stop(const std::string& reason, bool notifyPeer) {
         sendServer(Srv::Unregister, w);
     }
     setOverrides(false);
-    setRudderOverride(false);
+    setControlOverrides(false);
     havePose_ = false;
     sock_.close();
     nat_.stop();
@@ -558,16 +558,15 @@ void Session::update() {
         sendDrefs(false);
     }
 
+    setControlOverrides(!iHaveControl());
     if (iAmFlying()) {
         setOverrides(false);
         havePose_ = false;
-        setRudderOverride(profile_.fixedRoles && !iHaveControl());
         if (t - lastState_ >= kStateInterval) {
             lastState_ = t;
             sendState(t);
         }
     } else {
-        setRudderOverride(false);
         applyRemoteState(t);
         // Thrust, tiller, rudder... only from the pilot who has the controls.
         if (iHaveControl() && t - lastState_ >= kStateInterval) {
@@ -1168,6 +1167,19 @@ void Session::setOverrides(bool on) {
     }
 }
 
+void Session::setControlOverrides(bool on) {
+    // On the PC of the pilot without the controls: X-Plane and the aircraft stop reading the
+    // local rudder pedals, tiller and brakes, so the other pilot's (sent back) ones count.
+    if (on == controlOverridesOn_) return;
+    controlOverridesOn_ = on;
+    std::vector<double> v;
+    for (auto& d : profile_.drefs) {
+        if (d.kind != EntryKind::ControlOverride || !d.resolved()) continue;
+        v.assign(d.count, on ? 1.0 : 0.0);
+        d.write(v);
+    }
+}
+
 bool Session::sendsChanges(const DrefEntry& d) const {
     return d.kind == EntryKind::Sync || (d.kind == EntryKind::MasterSync && iAmFlying());
 }
@@ -1301,17 +1313,6 @@ void Session::afterFlightModel() {
     // never exactly what the other PC computed. Put it back so the picture doesn't shake.
     if (phase_ != Phase::Connected || iAmFlying() || !havePose_ || !g_pos.ok) return;
     writePose();
-}
-
-void Session::setRudderOverride(bool on) {
-    // Fixed roles: while the other pilot has the controls, their rudder comes in as
-    // sim/joystick/yoke_heading_ratio. Without this override X-Plane writes this PC's own
-    // pedals (or 0) over it every frame.
-    if (on == rudderOverride_) return;
-    static XPLMDataRef ref = XPLMFindDataRef("sim/operation/override/override_joystick_heading");
-    if (!ref) return;
-    rudderOverride_ = on;
-    XPLMSetDatai(ref, on ? 1 : 0);
 }
 
 }  // namespace sc

@@ -207,6 +207,7 @@ bool loadProfile(const std::string& profilesDir, const std::string& acfFile, con
                  : key == "master"   ? EntryKind::MasterSync
                  : key == "back"     ? EntryKind::Back
                  : key == "override" ? EntryKind::Override
+                 : key == "controloverride" ? EntryKind::ControlOverride
                                      : EntryKind::Sync;
         d.name = arg;
         size_t br = arg.find('[');

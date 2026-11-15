@@ -106,7 +106,7 @@ private:
     bool sample(double t, Snap& out) const;
     void applyRemoteState(double now);
     void setOverrides(bool on);
-    void setRudderOverride(bool on);
+    void setControlOverrides(bool on);
     void writePose();
     void setHostIsMaster(bool v);
     void setHostHasControl(bool v);
@@ -142,7 +142,7 @@ private:
     bool hostHasControl_ = true;  // fixed roles: who has thrust/tiller/rudder
     bool overridesOn_ = false;
     bool placed_ = false;
-    bool rudderOverride_ = false;
+    bool controlOverridesOn_ = false;
     // Follower: the position written before the flight model, written again after it.
     bool havePose_ = false;
     double poseLat_ = 0, poseLon_ = 0, poseElev_ = 0;
